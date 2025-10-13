@@ -20,6 +20,17 @@ harness = false
 name = "bench_guid"
 harness = false
 
+[[bench]]
+name = "bench_tables_create_handle"
+harness = false
+
+[[bench]]
+name = "bench_tables_create_table"
+harness = false
+
+[[bench]]
+name = "bench_tables_move_handle"
+
 [[example]]
 name = "basic_hob_usage"
 

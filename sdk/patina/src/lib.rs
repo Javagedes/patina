@@ -15,9 +15,11 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 #![cfg_attr(all(not(feature = "std"), not(test), not(feature = "mockall")), no_std)]
-#![cfg_attr(any(test, feature = "alloc"), feature(allocator_api))]
+// #![cfg_attr(any(test, feature = "alloc"), feature(allocator_api))]
 #![allow(static_mut_refs)]
 #![feature(coverage_attribute)]
+#![feature(alloc_layout_extra)]
+#![feature(allocator_api)]
 
 extern crate alloc;
 

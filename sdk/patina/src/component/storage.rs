@@ -28,6 +28,7 @@ use core::{
 use super::{
     hob::{FromHob, Hob},
     service::{IntoService, Service},
+    tables::Tables,
 };
 
 type HobParsers = BTreeMap<OwnedGuid, BTreeMap<TypeId, fn(&[u8], &mut Storage)>>;
@@ -215,6 +216,8 @@ pub struct Storage {
     boot_services: StandardBootServices,
     // Standard Runtime Services.
     runtime_services: StandardRuntimeServices,
+    // tables
+    tables: Tables,
 }
 
 impl Default for Storage {
@@ -237,6 +240,7 @@ impl Storage {
             hob_indices: BTreeMap::new(),
             boot_services: StandardBootServices::new_uninit(),
             runtime_services: StandardRuntimeServices::new_uninit(),
+            tables: Tables::new(),
         }
     }
 
