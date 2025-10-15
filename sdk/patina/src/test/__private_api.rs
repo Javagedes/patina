@@ -12,6 +12,8 @@
 
 use core::marker::PhantomData;
 
+use r_efi::efi::Guid;
+
 use crate::component::{
     MetaData, Storage, UnsafeStorageCell,
     params::{Param, ParamFunction},
@@ -41,10 +43,20 @@ pub fn test_cases() -> &'static [TestCase] {
     }
 }
 
+/// An enum to describe how / when a unit test should be executed.
+#[derive(Debug, Clone, Copy)]
+pub enum TestTrigger {
+    /// The test case should be executed immediately.
+    Immediate,
+    /// The test case should be executed when the specified event triggers.
+    Event(&'static Guid),
+}
+
 /// Internal struct to hold the test case information.
 #[derive(Debug, Clone, Copy)]
 pub struct TestCase {
     pub name: &'static str,
+    pub trigger: TestTrigger,
     pub skip: bool,
     pub should_fail: bool,
     pub fail_msg: Option<&'static str>,
@@ -61,9 +73,9 @@ impl TestCase {
 
     pub fn run(&self, storage: &mut Storage, debug_mode: bool) -> super::Result {
         let ret = if debug_mode {
-            log::debug!("#### {} Output Start ####", self.name);
+            log::debug!("#### {} Test Output Start ####", self.name);
             let ret = (self.func)(storage);
-            log::debug!("####  {} Output End  ####", self.name);
+            log::debug!("####  {} Test Output End  ####", self.name);
             ret
         } else {
             let level = log::max_level();
@@ -133,7 +145,14 @@ mod tests {
 
     #[test]
     fn test_should_run() {
-        let test_case = TestCase { name: "test", skip: false, should_fail: false, fail_msg: None, func: |_| Ok(true) };
+        let test_case = TestCase {
+            name: "test",
+            trigger: TestTrigger::Immediate,
+            skip: false,
+            should_fail: false,
+            fail_msg: None,
+            func: |_| Ok(true),
+        };
 
         std::assert!(test_case.should_run(&["test"]));
         std::assert!(test_case.should_run(&["t"]));
@@ -145,10 +164,18 @@ mod tests {
     fn test_run_with_default_settings() {
         let mut storage = Storage::new();
 
-        let test_case_pass =
-            TestCase { name: "test", skip: false, should_fail: false, fail_msg: None, func: |_| Ok(true) };
+        let test_case_pass = TestCase {
+            name: "test",
+            trigger: TestTrigger::Immediate,
+            skip: false,
+            should_fail: false,
+            fail_msg: None,
+            func: |_| Ok(true),
+        };
+
         let test_case_fail = TestCase {
             name: "test",
+            trigger: TestTrigger::Immediate,
             skip: false,
             should_fail: false,
             fail_msg: None,
@@ -168,10 +195,17 @@ mod tests {
     fn test_run_with_should_fail() {
         let mut storage = Storage::new();
 
-        let test_case_pass =
-            TestCase { name: "test", skip: false, should_fail: true, fail_msg: None, func: |_| Ok(true) };
+        let test_case_pass = TestCase {
+            name: "test",
+            trigger: TestTrigger::Immediate,
+            skip: false,
+            should_fail: true,
+            fail_msg: None,
+            func: |_| Ok(true),
+        };
         let test_case_fail = TestCase {
             name: "test",
+            trigger: TestTrigger::Immediate,
             skip: false,
             should_fail: true,
             fail_msg: None,
@@ -194,6 +228,7 @@ mod tests {
         // Test that a test that fails with the expected message, should pass
         let test_case = TestCase {
             name: "test",
+            trigger: TestTrigger::Immediate,
             skip: false,
             should_fail: true,
             fail_msg: Some("Failed to install protocol interface"),
@@ -206,6 +241,7 @@ mod tests {
         // Test that a test that fails with an unexpected message, should fail
         let test_case = TestCase {
             name: "test",
+            trigger: TestTrigger::Immediate,
             skip: false,
             should_fail: true,
             fail_msg: Some("Other failure"),

@@ -13,7 +13,7 @@ use core::{
     mem::{self, ManuallyDrop},
     num::NonZeroUsize,
     ops::Deref,
-    ptr,
+    ptr::{self, NonNull},
 };
 
 #[derive(Copy)]
@@ -230,6 +230,14 @@ unsafe impl<'a, R: CMutPtr<'a, Type = T>, T> CMutPtr<'a> for ManuallyDrop<R> {}
 unsafe impl<'a, R: CRef<'a, Type = T>, T> CRef<'a> for ManuallyDrop<R> {}
 // SAFETY: Memory layout and mutability are respected for these types.
 unsafe impl<'a, R: CMutRef<'a, Type = T>, T> CMutRef<'a> for ManuallyDrop<R> {}
+
+unsafe impl<T> CPtr<'_> for NonNull<T> {
+    type Type = T;
+
+    fn as_ptr(&self) -> *const Self::Type {
+        Self::as_ptr(*self)
+    }
+}
 
 #[cfg(test)]
 #[coverage(off)]
