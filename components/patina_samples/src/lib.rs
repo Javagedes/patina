@@ -18,3 +18,7 @@
 #![feature(coverage_attribute)]
 
 pub mod component;
+
+mod smbios_platform;
+
+pub use smbios_platform::SmbiosExampleComponent;
