@@ -36,14 +36,14 @@ to help developers track local performance changes when making changes during th
 
 ## Code Coverage
 
-Unit tests and code coverage are an important aspect of our project. It is a simple to consume statistic that gives us
+Unit tests and code coverage are an important aspect of our project. It is a simple-to-consume statistic that gives us
 some limited confidence in the reliability of newly added code. Even more importantly is that it gives us some peace of
 mind that future changes will not cause unexpected regressions or breaking changes, as unit tests that exist to uphold
 certain interface expectations would begin to fail.
 
 ```admonish note
-Needing to change a test's output expectation is a good indication that your change will either impact functionality,
-or be breaking change. Any submitted PR should be marked as such.
+Needing to change a test's output expectation is a good indication that your change will either impact functionality
+or be a breaking change. Any submitted PR should be marked as such.
 ```
 
 Patina's goal is to keep code coverage over 80%. This gives some leniency for code that cannot be tested (e.g. a error
@@ -58,14 +58,14 @@ justification as to why no code coverage is needed.
 ```
 
 We use [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) as our code coverage reporting tool, as it works
-well with Windows and Linux, and can generate different report types. All of our repository's have CI that calculates
+well with Windows and Linux, and can generate different report types. All of our repositories have CI that calculates
 and uploads code coverage results to [codecov](https://codecov.io) with an expected patch coverage of at least 80%.
-Submitting a PR with less than 80% of changed code coverged by tests will result in the check failing. It is ultimately
-up to the maintainers of patina on if they will merge the PR anyway, or require you to meet the 80% goal.
+Submitting a PR with less than 80% of changed code covered by tests will result in the check failing. It is ultimately
+up to the maintainers of Patina whether they will merge the PR as is or require you to meet the 80% goal.
 
 For local development, we provide a cargo make command (`cargo make coverage`) to generate code coverage data. This
-command produces two types of output. The first is a viewable HTML report (`target/coverage/html`), which is while the
-second is a lcov report (`target/lcov.info`) which can be easily consumed by various processing tools like
+command produces two types of output. The first is a viewable HTML report (`target/coverage/html`) while the second is
+a lcov report (`target/lcov.info`) which can be easily consumed by various processing tools like
 [Coverage Gutters](https://marketplace.visualstudio.com/items?itemName=ryanluker.vscode-coverage-gutters)
 
 ```mermaid
