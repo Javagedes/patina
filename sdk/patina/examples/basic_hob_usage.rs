@@ -178,7 +178,7 @@ mod util {
         data.extend_from_slice(&hob.data1.to_le_bytes());
         data.extend_from_slice(&hob.data2.to_le_bytes());
         data.extend_from_slice(&hob.data3.to_le_bytes());
-        data.push(hob.data4 as u8);
+        data.push(hob.data4);
         data.extend_from_slice(&hob.padding);
 
         let as_slice = Box::leak(data.into_boxed_slice());
