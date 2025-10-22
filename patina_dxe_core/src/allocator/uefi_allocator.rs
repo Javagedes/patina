@@ -146,35 +146,44 @@ impl UefiAllocator {
     ///
     /// Caller must guarantee that `buffer` was originally allocated by [`Self::allocate_pool`]
     pub unsafe fn free_pool(&self, buffer: *mut c_void) -> Result<(), EfiError> {
-        let (_, offset) = Layout::new::<AllocationInfo>()
-            .extend(
-                Layout::from_size_align(0, UEFI_POOL_ALIGN)
-                    .unwrap_or_else(|err| panic!("Allocation layout error: {err:#?}")),
-            )
-            .unwrap_or_else(|err| panic!("Allocation layout error: {err:#?}"));
+        // Calculate the offset once at compile time
+        const OFFSET: usize = {
+            match Layout::new::<AllocationInfo>().extend(
+                match Layout::from_size_align(0, UEFI_POOL_ALIGN) {
+                    Ok(layout) => layout,
+                    Err(_) => panic!("Base Offset calculation error in free_pool"),
+                }
+            ) {
+                Ok((_, offset)) => offset,
+                Err(_) => panic!("Base Offset calculation error in free_pool"),
+            }
+        };
 
         //TODO: trusting that "buffer" is legit is pretty naive - but performant. Presently the allocator doesn't have
         //tracking mechanisms that permit the validation of the pointer (hence the unsafe).
-        let allocation_info: *mut AllocationInfo = ((buffer as usize) - offset) as *mut AllocationInfo;
+        let mut ptr = unsafe {
+            NonNull::new(buffer)
+            .ok_or(EfiError::InvalidParameter)?
+            .byte_sub(OFFSET)
+            .cast::<AllocationInfo>()
+        };
 
-        //must be true for any pool allocation
-        if unsafe { (*allocation_info).signature } != POOL_SIG {
+        let allocation_info = unsafe { ptr.as_mut() };
+
+        if allocation_info.signature != POOL_SIG {
             debug_assert!(false, "Pool signature is incorrect.");
             return Err(EfiError::InvalidParameter);
         }
-        // check if allocation is from this pool.
-        if unsafe { (*allocation_info).memory_type } != self.memory_type() {
-            return Err(EfiError::NotFound);
-        }
-        //zero after check so it doesn't get reused.
-        unsafe {
-            (*allocation_info).signature = 0;
-        }
-        if let Some(non_null_ptr) = NonNull::new(allocation_info as *mut u8) {
-            unsafe { self.allocator.deallocate(non_null_ptr, (*allocation_info).layout) };
-        } else {
-            return Err(EfiError::InvalidParameter);
-        }
+
+        // if allocation_info.memory_type != self.memory_type() {
+        //     debug_assert!(false, "Pool memory type does not match allocator memory type.");
+        //     return Err(EfiError::InvalidParameter);
+        // }
+
+        allocation_info.signature = 0;
+
+        unsafe { self.allocator.deallocate(ptr.cast::<u8>(), allocation_info.layout) };
+
         Ok(())
     }
 
