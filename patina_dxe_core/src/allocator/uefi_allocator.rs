@@ -54,7 +54,7 @@ impl UefiAllocator {
         allocator_handle: efi::Handle,
         page_allocation_granularity: usize,
     ) -> Self {
-        // SAFETY: Pointer has not been cast, so is a valid type to be derereferenced.
+        // SAFETY: Pointer has not been cast, so is a valid type to be dereferenced.
         let mt = unsafe { memory_type.as_ref().memory_type };
         UefiAllocator {
             allocator: SpinLockedFixedSizeBlockAllocator::new(
