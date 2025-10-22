@@ -177,12 +177,10 @@ impl UefiAllocator {
             debug_assert!(false, "Pool signature is incorrect.");
             return Err(EfiError::InvalidParameter);
         }
-
         // check if allocation is from this pool.
         if allocation_info.memory_type != self.memory_type() {
             return Err(EfiError::NotFound);
         }
-
         //zero after check so it doesn't get reused.
         allocation_info.signature = 0;
 
