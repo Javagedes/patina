@@ -177,7 +177,6 @@ impl UefiAllocator {
         }
 
         if allocation_info.memory_type != self.memory_type() {
-            debug_assert!(false, "Pool memory type does not match allocator memory type.");
             return Err(EfiError::InvalidParameter);
         }
 
