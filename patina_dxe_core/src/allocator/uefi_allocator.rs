@@ -169,6 +169,7 @@ impl UefiAllocator {
             NonNull::new(buffer).ok_or(EfiError::InvalidParameter)?.byte_sub(OFFSET).cast::<AllocationInfo>()
         };
 
+        // SAFETY: Caller must follow safety contract defined by this function.
         let allocation_info = unsafe { ptr.as_mut() };
 
         //must be true for any pool allocation
