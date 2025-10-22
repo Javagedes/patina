@@ -41,6 +41,7 @@ struct AllocationInfo {
 /// - A pool implementation that allows tracking the layout and memory_type of UEFI pool allocations.
 pub struct UefiAllocator {
     allocator: SpinLockedFixedSizeBlockAllocator,
+    memory_type: efi::MemoryType,
 }
 
 impl UefiAllocator {
@@ -53,6 +54,8 @@ impl UefiAllocator {
         allocator_handle: efi::Handle,
         page_allocation_granularity: usize,
     ) -> Self {
+        // SAFETY: Pointer has not been cast, so is a valid type to be derereferenced.
+        let mt = unsafe { memory_type.as_ref().memory_type };
         UefiAllocator {
             allocator: SpinLockedFixedSizeBlockAllocator::new(
                 gcd,
@@ -60,6 +63,7 @@ impl UefiAllocator {
                 memory_type,
                 page_allocation_granularity,
             ),
+            memory_type: mt,
         }
     }
 
@@ -78,7 +82,7 @@ impl UefiAllocator {
 
     /// Returns the UEFI memory type associated with this allocator.
     pub fn memory_type(&self) -> efi::MemoryType {
-        self.allocator.memory_type()
+        self.memory_type
     }
 
     /// Reserves a range of memory to be used by this allocator of the given size in pages.
@@ -148,12 +152,10 @@ impl UefiAllocator {
     pub unsafe fn free_pool(&self, buffer: *mut c_void) -> Result<(), EfiError> {
         // Calculate the offset once at compile time
         const OFFSET: usize = {
-            match Layout::new::<AllocationInfo>().extend(
-                match Layout::from_size_align(0, UEFI_POOL_ALIGN) {
-                    Ok(layout) => layout,
-                    Err(_) => panic!("Base Offset calculation error in free_pool"),
-                }
-            ) {
+            match Layout::new::<AllocationInfo>().extend(match Layout::from_size_align(0, UEFI_POOL_ALIGN) {
+                Ok(layout) => layout,
+                Err(_) => panic!("Base Offset calculation error in free_pool"),
+            }) {
                 Ok((_, offset)) => offset,
                 Err(_) => panic!("Base Offset calculation error in free_pool"),
             }
@@ -162,10 +164,7 @@ impl UefiAllocator {
         //TODO: trusting that "buffer" is legit is pretty naive - but performant. Presently the allocator doesn't have
         //tracking mechanisms that permit the validation of the pointer (hence the unsafe).
         let mut ptr = unsafe {
-            NonNull::new(buffer)
-            .ok_or(EfiError::InvalidParameter)?
-            .byte_sub(OFFSET)
-            .cast::<AllocationInfo>()
+            NonNull::new(buffer).ok_or(EfiError::InvalidParameter)?.byte_sub(OFFSET).cast::<AllocationInfo>()
         };
 
         let allocation_info = unsafe { ptr.as_mut() };
@@ -175,10 +174,10 @@ impl UefiAllocator {
             return Err(EfiError::InvalidParameter);
         }
 
-        // if allocation_info.memory_type != self.memory_type() {
-        //     debug_assert!(false, "Pool memory type does not match allocator memory type.");
-        //     return Err(EfiError::InvalidParameter);
-        // }
+        if allocation_info.memory_type != self.memory_type() {
+            debug_assert!(false, "Pool memory type does not match allocator memory type.");
+            return Err(EfiError::InvalidParameter);
+        }
 
         allocation_info.signature = 0;
 
