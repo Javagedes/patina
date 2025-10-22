@@ -163,6 +163,8 @@ impl UefiAllocator {
 
         //TODO: trusting that "buffer" is legit is pretty naive - but performant. Presently the allocator doesn't have
         //tracking mechanisms that permit the validation of the pointer (hence the unsafe).
+        
+        // SAFETY: Caller must follow safety contract defined by this function.
         let mut ptr = unsafe {
             NonNull::new(buffer).ok_or(EfiError::InvalidParameter)?.byte_sub(OFFSET).cast::<AllocationInfo>()
         };
@@ -181,6 +183,7 @@ impl UefiAllocator {
 
         allocation_info.signature = 0;
 
+        // SAFETY: Caller must follow safety contract defined by this function.
         unsafe { self.allocator.deallocate(ptr.cast::<u8>(), allocation_info.layout) };
 
         Ok(())
