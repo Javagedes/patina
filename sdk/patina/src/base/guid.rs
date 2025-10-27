@@ -617,7 +617,7 @@ const fn guid_from_str(s: &str) -> core::result::Result<r_efi::efi::Guid, GuidEr
         parse_hex!(chars, 30, 2, u8),
     ];
 
-    Ok(r_efi::efi::Guid::from_fields(let_low, time_mid, time_hi_and_version, clk_seq_hi_res, clk_seq_low, &node))
+    Ok(r_efi::efi::Guid::from_fields(time_low, time_mid, time_hi_and_version, clk_seq_hi_res, clk_seq_low, &node))
 }
 
 /// Converts a single hex character (represented as a char) to its corresponding u8 value
