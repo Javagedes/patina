@@ -116,13 +116,13 @@ cargo make -p release build-aarch64
 
 ## Test
 
-- Run all unit tests in the workspace:
+* Run all unit tests in the workspace:
 
 ```shell
 cargo make test
 ```
 
-- Run tests in an individual package:
+* Run tests in an individual package:
 
 ```shell
 cargo make test -p patina
@@ -134,7 +134,7 @@ Build on-platform tests in the workspace:
 cargo make patina-test
 ```
 
-- Build on-platform tests in an individual package:
+* Build on-platform tests in an individual package:
 
 ```shell
 cargo make patina-test -p patina
@@ -235,9 +235,9 @@ your ideas and feedback on additional priorities that matter to the community.
 
 ## Contributing
 
-- Review Rust Documentation in the [/docs](https://github.com/OpenDevicePartnership/patina/blob/HEAD/docs/src/introduction.md)
+* Review Rust Documentation in the [/docs](https://github.com/OpenDevicePartnership/patina/blob/HEAD/docs/src/introduction.md)
 directory.
-- Run unit tests and ensure all pass.
+* Run unit tests and ensure all pass.
 
 [release]: https://img.shields.io/crates/v/patina
 [_release]: https://github.com/OpenDevicePartnership/patina/releases/latest

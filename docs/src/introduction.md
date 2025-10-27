@@ -111,5 +111,3 @@ start of the different sections mentioned above:
 3. [Component Development](component/getting_started.md)
 4. [Contributing to Patina](todo!())
 5. [Developer Guides](dev/documenting.md)
-
-
