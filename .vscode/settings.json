@@ -6,7 +6,4 @@
     "--message-format=json"
   ],
   "rust-analyzer.cargo.targetDir": true,
-  "rust-analyzer.runnables.extraEnv": {
-    "RUSTC_BOOTSTRAP": "1"
-  },
 }

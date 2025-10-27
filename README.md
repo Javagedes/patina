@@ -198,12 +198,6 @@ Benchmarks utilize the [criterion](https://crates.io/crates/criterion) benchmark
 to be added, they should follow that documentation. Benchmarks can be added to any crate to test performance by
 following the same layout as existing benchmarks, and adding the benchmark to the appropriate crate's Cargo.toml file.
 
-## Notes
-
-- This project uses a makefile that sets the "RUSTC_BOOTSTRAP=1" environment variable due to internal requirements which
-puts us in parity with the nightly features that exist on the toolchain targeted.  The "nightly" toolchain may be used
-in place of this.
-
 ## High-Level Patina Roadmap
 
 Patina's upcoming work falls into three main categories:
