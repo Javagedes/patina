@@ -2,6 +2,7 @@
 
 [![release]][_release]
 [![commit]][_commit]
+[![docs]][_docs]
 [![ci]][_ci]
 [![cov]][_cov]
 
@@ -34,6 +35,16 @@ incremental migration of today's firmware components largely written in C to Rus
 objective for this effort is to improve the security and stability of system firmware by leveraging the memory safety
 offered by Rust while retaining similar boot performance.
 
+## Docs
+
+* **[Getting Started](https://opendevicepartnership.github.io/patina/):** Patina's official getting started guide,
+containing information regarding the project itself, integrating the Patina DXE Core into a platform, developing a
+Patina component for your platform, and developing Patina itself.
+* **[Patina DXE Core API docs](https://docs.rs/patina_dxe_core/latest/)** Patina DXE Core API documentation, for
+creating a Patina DXE Core EFI binary with platform customizations such as additional Patina components.
+* **[Patina SDK API docs](https://docs.rs/patina/latest/patina/)** Patina SDK API documentation, for writing a Patina
+component.
+
 ## Important Notes
 
 This repository is still considered to be in a "beta" stage at this time. Platform testing and integration feedback
@@ -57,17 +68,6 @@ Below is the information required to perform a release that publishes to the reg
    [Publish Release Workflow](https://github.com/OpenDevicePartnership/patina/actions/workflows/publish-release.yml)
 4. Once completed successfully, click on the  "Notify Branch Creation Step" and click the provided link to create the
    PR to update all versions in all Cargo.toml files across the repository.
-
-## Documentation
-
-We have "Getting Started" documentation located in this repository at `docs/*`. The latest documentation can be found
-at <https://OpenDevicePartnership.github.io/patina/>, however this documentation can also be self-hosted via
-([mdbook](https://github.com/rust-lang/mdBook)). Once you all dependencies installed as specified below, you can run
-`mdbook serve docs` to self host the getting started book.
-
-You can also generate API documentation for the project using `cargo make doc`. This will eventually be hosted on
-docs.rs once we begin uploading to crates.io. You can have the documentation opened in your browser by running
-`cargo make doc-open`.
 
 ## First-Time Tool Setup Instructions
 
@@ -247,6 +247,8 @@ directory.
 [_ci]: https://github.com/OpenDevicePartnership/patina/actions/workflows/ci-workflow.yml
 [cov]: https://codecov.io/gh/OpenDevicePartnership/patina/graph/badge.svg?token=CWHWOUUGY6
 [_cov]: https://codecov.io/gh/OpenDevicePartnership/patina
+[docs]: https://img.shields.io/github/actions/workflow/status/OpenDevicePartnership/patina/publish-mdbook.yml?branch=main&label=docs
+[_docs]: https://opendevicepartnership.github.io/patina/
 
 [overall_unsafe_code]: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OpenDevicePartnership/patina/refs/heads/unsafe-code-badges/x86_64-unknown-uefi/badge_overall.json
 [_overall_unsafe_code]: https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OpenDevicePartnership/patina/refs/heads/unsafe-code-badges/x86_64-unknown-uefi/badge_overall.json
