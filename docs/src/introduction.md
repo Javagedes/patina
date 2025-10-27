@@ -69,7 +69,7 @@ flowchart TD
         plugin2["Component"]
         pluginN["Component"]
   end
-    consumer_bin["Platform Patina DXE Core (binary)"] --> patina_core["patina_dxe_core"]
+    consumer_bin["Platform Patina DXE Core (binary)"] -- uses --> patina_core["patina_dxe_core"]
     consumer_bin -. optionally uses .-> plugin_crates
     patina_core -- uses --> internal_crates
     patina_core -. depends on .-> patina_sdk["patina (SDK crate)"]
