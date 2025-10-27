@@ -54,8 +54,8 @@ core provided services) and a PI spec compliant* [DXE Dispatcher](https://uefi.o
 Outside of PI spec compliance, platforms can attach Patina Components, which are conceptually similar to UEFI
 components, but are pure rust and monolithically compiled with the Patina DXE Core. Some components are written and
 maintained by Patina, but are still optional. We are expecting that new components will be written by platform
-maintainers (specifically for their platform) or generically for the Patina ecosystem as a whole. See
-[Patina Component Model](component/getting_started.md) for more information.
+maintainers. These may be specific to their platform or generic for the Patina ecosystem. See [Patina Component Model](component/getting_started.md)
+for more information.
 
 ```mermaid
 flowchart TD
