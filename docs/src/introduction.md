@@ -7,7 +7,7 @@ owners working with or contributing to Patina.
 
 To put it simply, Patina is a [PI spec](https://uefi.org/specifications) compliant pure rust DXE Core with an interface
 for writing monolithically compiled [Patina components](component/getting_started.md) (drivers) using a dependency
-injection model. Patina takes a more opinionated stance on some implementatino details to provide a more secure
+injection model. Patina takes a more opinionated stance on some implementation details to provide a more secure
 runtime. Due to this, there are some key platform requirements that differ from a non-Patina implementation. See
 [Patina Requirements](integrate/patina_dxe_core_requirements.md) for more information regarding this.
 
@@ -38,7 +38,7 @@ component or developing the Patina DXE core.
 In addition to this, there are two additional repositories you should review, which are specific to integrating Patina
 as a platform's DXE Core:
 
-**1. [patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu):** A repostiory containing
+**1. [patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu):** A repository containing
 two distinct implementations / configurations of the `patina_dxe_core` library crate for our Q35 and SBSA virtual
 platforms.
 
@@ -47,21 +47,17 @@ platforms (Q35, SBSA) that run on QEMU.
 
 ## Putting it all together
 
-The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the bare-bones PI spec compiant Patina
+The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the bare-bones PI spec compliant Patina
 DXE Core. The Core produces the [EFI System Table](https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html) (with the
 core provided services) and a PI spec compliant* [DXE Dispatcher](https://uefi.org/specs/PI/1.8/V2_DXE_Dispatcher.html).
 
 Outside of PI spec compliance, platforms can attach Patina Components, which are conceptually similar to UEFI
-components, but are pure rust and monolithcially compiled with the Patina DXE Core. Some components are written and
+components, but are pure rust and monolithically compiled with the Patina DXE Core. Some components are written and
 maintained by Patina, but are still optional. We are expecting that new components will be written by platform
 maintainers (specifically for their platform) or generically for the Patina ecosystem as a whole. See
 [Patina Component Model](component/getting_started.md) for more information.
 
 ```mermaid
----
-config:
-  layout: dagre
----
 flowchart TD
  subgraph internal_crates["Internal Crates (1..N)"]
     direction TB
@@ -86,7 +82,7 @@ flowchart TD
 ## All Repositories
 
 <!-- markdownlint-disable MD013 -->
-| Repostiory | Description |
+| Repository | Description |
 |------------|-------------|
 | [patina](https://github.com/OpenDevicePartnership/patina) | Core codebase for Patina containing Patina-only crates. |
 | [patina-readiness-tool](https://github.com/OpenDevicePartnership/patina-readiness-tool) | A DXE core replacement binary that reviews HOBs passed from PEI to DXE to validate your platform is ready to use the Patina DXE Core. |
@@ -107,7 +103,7 @@ knowledge is beneficial throughout the book, and some EDK II knowledge is benefi
 final pure-Rust platform Patina DXE core in EDK II style firmware.
 ```
 
-While you can naviate to any section in this book via the left-side navigation bar, here are the quick links to the
+While you can navigate to any section in this book via the left-side navigation bar, here are the quick links to the
 start of the different sections mentioned above:
 
 1. [Patina Background](patina.md)
