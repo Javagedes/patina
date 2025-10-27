@@ -603,7 +603,7 @@ const fn guid_from_str(s: &str) -> core::result::Result<r_efi::efi::Guid, GuidEr
         return Err(GuidError::InvalidLength { expected: EXPECTED_HEX_CHARS, actual: char_count });
     }
 
-    let let_low = parse_hex!(chars, 0, 8, u32);
+    let time_low = parse_hex!(chars, 0, 8, u32);
     let time_mid = parse_hex!(chars, 8, 4, u16);
     let time_hi_and_version = parse_hex!(chars, 12, 4, u16);
     let clk_seq_hi_res = parse_hex!(chars, 16, 2, u8);
