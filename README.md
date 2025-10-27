@@ -40,10 +40,11 @@ offered by Rust while retaining similar boot performance.
 * **[Getting Started](https://opendevicepartnership.github.io/patina/):** Patina's official getting started guide,
 containing information regarding the project itself, integrating the Patina DXE Core into a platform, developing a
 Patina component for your platform, and developing Patina itself.
-* **[Patina DXE Core API docs](https://docs.rs/patina_dxe_core/latest/)** Patina DXE Core API documentation, for
-creating a Patina DXE Core EFI binary with platform customizations such as additional Patina components.
-* **[Patina SDK API docs](https://docs.rs/patina/latest/patina/)** Patina SDK API documentation, for writing a Patina
-component.
+* **[Patina DXE Core API docs](https://docs.rs/patina_dxe_core/latest/)** Patina DXE Core API documentation. Includes
+information for creating a Patina DXE Core EFI binary with platform customizations such as additional Patina
+components.
+* **[Patina SDK API docs](https://docs.rs/patina/latest/patina/)** Patina SDK API documentation that describes how to
+write a Patina component.
 
 ## Important Notes
 

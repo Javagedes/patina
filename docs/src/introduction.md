@@ -5,23 +5,24 @@
 security, performance, and reliability. This book serves as high-level documentation for developers and platform
 owners working with or contributing to Patina.
 
-To put it simply, Patina is a [PI spec](https://uefi.org/specifications) compliant pure rust DXE Core with an interface
-for writing monolithically compiled [Patina components](component/getting_started.md) (drivers) using a dependency
-injection model. Patina takes a more opinionated stance on some implementation details to provide a more secure
-runtime. Due to this, there are some key platform requirements that differ from a non-Patina implementation. See
-[Patina Requirements](integrate/patina_dxe_core_requirements.md) for more information regarding this.
+To put it simply, Patina is a [UEFI spec](https://uefi.org/specifications) compliant pure Rust DXE Core with an
+interface for writing monolithically compiled [Patina components](component/getting_started.md) (drivers) using a
+dependency injection model. It should be noted that Patina takes a more opinionated stance on some implementation
+details to provide a more secure runtime, so we are not fully PI spec compliant. Due to this, there are some key
+platform requirements that differ from a non-Patina implementation. See [Patina Requirements](integrate/patina_dxe_core_requirements.md)
+for more information regarding this.
 
 **This book is the "catch-all" for Patina:** it contains various categories of documentation regarding Patina that can
 be broken up into these 5 categories:
 
 1. Background of Patina and it's goals.
-2. Integrating the Patina DXE Core into your platform.
-3. Developing Patina components for the Patina DXE core.
+2. Integrating the Patina code into your platform.
+3. Developing Patina components.
 4. Contributing to Patina.
 5. Development guidance and standards that apply to both Patina and Patina component developers.
 
-If you have not read this book before, we suggestion you start with **(1) [Patina Background](patina.md)**, which
-outlines the project's goals and design philosophy.
+If you have not read this book before, we suggest you start with **(1) [Patina Background](patina.md)**, which outlines
+the project's goals and design philosophy.
 
 ## Important Crates and Repositories
 
@@ -47,12 +48,12 @@ platforms (Q35, SBSA) that run on QEMU.
 
 ## Putting it all together
 
-The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the bare-bones PI spec compliant Patina
-DXE Core. The Core produces the [EFI System Table](https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html) (with the
-core provided services) and a PI spec compliant* [DXE Dispatcher](https://uefi.org/specs/PI/1.8/V2_DXE_Dispatcher.html).
+The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the bare-bones UEFI spec compliant
+Patina DXE Core. The Core produces the [EFI System Table](https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html)
+(with the core provided services) and a UEFI spec compliant [DXE Dispatcher](https://uefi.org/specs/PI/1.8/V2_DXE_Dispatcher.html).
 
-Outside of PI spec compliance, platforms can attach Patina Components, which are conceptually similar to UEFI
-components, but are pure rust and monolithically compiled with the Patina DXE Core. Some components are written and
+Outside of UEFI spec compliance, platforms can attach Patina Components, which are conceptually similar to UEFI
+components, but are pure Rust and monolithically compiled with the Patina DXE Core. Some components are written and
 maintained by Patina, but are still optional. We are expecting that new components will be written by platform
 maintainers. These may be specific to their platform or generic for the Patina ecosystem. See [Patina Component Model](component/getting_started.md)
 for more information.
