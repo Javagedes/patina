@@ -9,18 +9,21 @@
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec, vec::Vec};
 use core::{convert::TryInto, ffi::c_void, mem::transmute, slice, slice::from_raw_parts};
 use goblin::pe::section_table;
-use patina::base::{DEFAULT_CACHE_ATTR, UEFI_PAGE_SIZE, align_up};
-use patina::error::EfiError;
-use patina::performance::{
-    logging::{perf_image_start_begin, perf_image_start_end, perf_load_image_begin, perf_load_image_end},
-    measurement::create_performance_measurement,
+use patina::{
+    base::{DEFAULT_CACHE_ATTR, UEFI_PAGE_SIZE, align_up},
+    error::EfiError,
+    guids,
+    performance::{
+        logging::{perf_image_start_begin, perf_image_start_end, perf_load_image_begin, perf_load_image_end},
+        measurement::create_performance_measurement,
+    },
+    pi::{
+        self,
+        fw_fs::FfsSectionRawType::PE32,
+        hob::{Hob, HobList},
+    },
+    uefi_pages_to_size, uefi_size_to_pages,
 };
-use patina::pi::{
-    self,
-    fw_fs::FfsSectionRawType::PE32,
-    hob::{Hob, HobList},
-};
-use patina::{guids, uefi_pages_to_size, uefi_size_to_pages};
 use patina_internal_device_path::{DevicePathWalker, copy_device_path_to_boxed_slice, device_path_node_count};
 use r_efi::efi;
 
@@ -1535,8 +1538,7 @@ mod tests {
         test_collateral, test_support,
     };
     use core::{ffi::c_void, sync::atomic::AtomicBool};
-    use patina::error::EfiError;
-    use patina::pi;
+    use patina::{error::EfiError, pi};
     use r_efi::efi;
     use std::{fs::File, io::Read};
 

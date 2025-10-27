@@ -184,7 +184,8 @@ mod tests {
     };
 
     use patina::performance::{
-        measurement::event_callback, record::PerformanceRecordBuffer, record::hob::MockHobPerformanceDataExtractor,
+        measurement::event_callback,
+        record::{PerformanceRecordBuffer, hob::MockHobPerformanceDataExtractor},
         table::MockFirmwareBasicBootPerfTable,
     };
 

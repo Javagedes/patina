@@ -11,11 +11,11 @@
 //!
 use alloc::boxed::Box;
 use core::{ffi::c_void, ptr};
-use patina::pi::hob::{Hob, PhaseHandoffInformationTable};
 use patina::{
     boot_services::{BootServices, StandardBootServices},
     component::IntoComponent,
     error::{EfiError, Result},
+    pi::hob::{Hob, PhaseHandoffInformationTable},
     serial::SerialIO,
 };
 use r_efi::efi;
@@ -145,8 +145,10 @@ mod tests {
     extern crate std;
     use core::mem::size_of;
 
-    use patina::pi::hob::{GUID_EXTENSION, GuidHob, header::Hob};
-    use patina::serial::uart::UartNull;
+    use patina::{
+        pi::hob::{GUID_EXTENSION, GuidHob, header::Hob},
+        serial::uart::UartNull,
+    };
 
     use crate::memory_log::AdvancedLog;
 

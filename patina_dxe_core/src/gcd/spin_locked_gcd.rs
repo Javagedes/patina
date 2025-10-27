@@ -12,13 +12,13 @@ use core::{fmt::Display, ptr};
 use patina::{base::DEFAULT_CACHE_ATTR, error::EfiError};
 
 use mu_rust_helpers::function;
-use patina::pi::{
-    dxe_services::{self, GcdMemoryType},
-    hob::{self, EFiMemoryTypeInformation},
-};
 use patina::{
     base::{SIZE_4GB, UEFI_PAGE_MASK, UEFI_PAGE_SHIFT, UEFI_PAGE_SIZE, align_up},
     guids::CACHE_ATTRIBUTE_CHANGE_EVENT_GROUP,
+    pi::{
+        dxe_services::{self, GcdMemoryType},
+        hob::{self, EFiMemoryTypeInformation},
+    },
     uefi_pages_to_size,
 };
 use patina_internal_collections::{Error as SliceError, Rbt, SliceKey, node_size};

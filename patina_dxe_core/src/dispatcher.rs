@@ -13,7 +13,6 @@ use alloc::{
 };
 use core::{cmp::Ordering, ffi::c_void};
 use mu_rust_helpers::{function, guid::guid_fmt};
-use patina::pi::{fw_fs::ffs, protocols::firmware_volume_block};
 use patina::{
     component::service::Service,
     error::EfiError,
@@ -21,6 +20,7 @@ use patina::{
         logging::{perf_function_begin, perf_function_end},
         measurement::create_performance_measurement,
     },
+    pi::{fw_fs::ffs, protocols::firmware_volume_block},
 };
 use patina_ffs::{
     section::{Section, SectionExtractor},

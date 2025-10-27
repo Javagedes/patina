@@ -354,8 +354,7 @@ pub fn init_events_support(bs: &mut efi::BootServices) {
 mod tests {
     use super::*;
     use crate::test_support;
-    use std::ptr;
-    use std::sync::atomic::Ordering;
+    use std::{ptr, sync::atomic::Ordering};
 
     fn with_locked_state<F: Fn() + std::panic::RefUnwindSafe>(f: F) {
         test_support::with_global_lock(|| {

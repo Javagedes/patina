@@ -27,10 +27,10 @@ use core::{
     result::Result,
 };
 use linked_list_allocator::{align_down_size, align_up_size};
-use patina::pi::{dxe_services::GcdMemoryType, hob::EFiMemoryTypeInformation};
 use patina::{
     base::{UEFI_PAGE_SHIFT, UEFI_PAGE_SIZE, align_up},
     error::EfiError,
+    pi::{dxe_services::GcdMemoryType, hob::EFiMemoryTypeInformation},
     uefi_pages_to_size, uefi_size_to_pages,
 };
 use r_efi::efi;

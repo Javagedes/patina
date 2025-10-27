@@ -14,9 +14,10 @@
 //!
 //! HOBs and their respective parsers are automatically gathered when a component is registered, and one step of Core
 //! initialization is to parse the HOB list and use any registered parsers to parse a GUIDed HOB.
-use patina::component::prelude::*;
-use patina::component::{IntoComponent, Storage};
-use patina::{Guid, OwnedGuid};
+use patina::{
+    Guid, OwnedGuid,
+    component::{IntoComponent, Storage, prelude::*},
+};
 use zerocopy::FromBytes;
 
 /// This struct represents a custom HOB that is a simple cast and does not require any special handling or parsing.
@@ -127,8 +128,7 @@ fn main() {
 
 // Users reviewing this example can skip the following module, as it is not relevant to the example itself.
 mod util {
-    use patina::component::Component;
-    use patina::pi::hob::GuidHob;
+    use patina::{component::Component, pi::hob::GuidHob};
 
     use super::{CustomHob1, CustomHob2, FromHob, IntoComponent, Storage};
 

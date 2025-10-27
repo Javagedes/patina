@@ -10,9 +10,11 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use patina::boot_services::{BootServices, StandardBootServices};
-use patina::test::patina_test;
-use patina::{u_assert, u_assert_eq};
+use patina::{
+    boot_services::{BootServices, StandardBootServices},
+    test::patina_test,
+    u_assert, u_assert_eq,
+};
 use r_efi::efi;
 
 use crate::{memory_log, protocol::AdvancedLoggerProtocol};

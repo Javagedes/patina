@@ -20,10 +20,7 @@ pub mod serializable_hob;
 
 use r_efi::efi::Guid;
 
-use alloc::format;
-use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec, vec::Vec};
 
 /// Format a GUID as a string in the standard 8-4-4-4-12 format.
 /// This custom implementation is necessary because `r_efi::Guid` has private fields and cannot derive `Serialize` directly.

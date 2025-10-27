@@ -12,11 +12,13 @@ mod memory_block;
 mod spin_locked_gcd;
 
 use core::{ffi::c_void, ops::Range};
-use patina::base::{align_down, align_up};
-use patina::error::EfiError;
-use patina::pi::{
-    dxe_services::{GcdIoType, GcdMemoryType},
-    hob::{self, Hob, HobList, PhaseHandoffInformationTable},
+use patina::{
+    base::{align_down, align_up},
+    error::EfiError,
+    pi::{
+        dxe_services::{GcdIoType, GcdMemoryType},
+        hob::{self, Hob, HobList, PhaseHandoffInformationTable},
+    },
 };
 use r_efi::efi;
 

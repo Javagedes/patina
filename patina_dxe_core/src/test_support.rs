@@ -10,17 +10,16 @@
 //!
 use crate::{GCD, protocols::PROTOCOL_DB};
 use core::ffi::c_void;
-use patina::guids::ZERO;
-use patina::pi::hob::HobList;
-use patina::pi::{
-    BootMode,
-    dxe_services::GcdMemoryType,
-    hob::{self, ResourceDescriptorV2, header},
+use patina::{
+    guids::ZERO,
+    pi::{
+        BootMode,
+        dxe_services::GcdMemoryType,
+        hob::{self, HobList, ResourceDescriptorV2, header},
+    },
 };
 use r_efi::efi;
-use std::any::Any;
-use std::slice;
-use std::{fs::File, io::Read};
+use std::{any::Any, fs::File, io::Read, slice};
 
 #[macro_export]
 macro_rules! test_collateral {
@@ -373,13 +372,14 @@ pub(crate) fn build_test_hob_list(mem_size: u64) -> *const c_void {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::c_void;
-    use crate::test_support::BootMode;
-    use crate::test_support::get_memory;
-    use crate::test_support::header;
-    use crate::test_support::hob;
-    use patina::guids;
-    use patina::pi::hob::Hob::MemoryAllocationModule;
+    use crate::{
+        c_void,
+        test_support::{BootMode, get_memory, header, hob},
+    };
+    use patina::{
+        guids,
+        pi::hob::{Hob::MemoryAllocationModule, ResourceDescriptorV2},
+    };
 
     // Compact Hoblist with DXE core Alloction hob. Use this when DXE core hob is required.
     pub(crate) fn build_test_hob_list_compact(mem_size: u64) -> *const c_void {

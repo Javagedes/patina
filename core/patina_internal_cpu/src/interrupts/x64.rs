@@ -9,8 +9,7 @@
 
 use crate::log_registers;
 use core::arch::asm;
-use patina::error::EfiError;
-use patina::pi::protocols::cpu_arch::EfiSystemContext;
+use patina::{error::EfiError, pi::protocols::cpu_arch::EfiSystemContext};
 use patina_stacktrace::StackTrace;
 
 cfg_if::cfg_if! {

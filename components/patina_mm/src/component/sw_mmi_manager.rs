@@ -12,8 +12,10 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use crate::config::{MmCommunicationConfiguration, MmiPort};
-use crate::service::platform_mm_control::PlatformMmControl;
+use crate::{
+    config::{MmCommunicationConfiguration, MmiPort},
+    service::platform_mm_control::PlatformMmControl,
+};
 use patina::component::{
     IntoComponent,
     params::{Commands, Config},
@@ -75,9 +77,9 @@ impl SwMmiManager {
         log::debug!(target: "sw_mmi", "MM config - cmd_port: {:?}, data_port: {:?}, acpi_base: {:?}",
             config.cmd_port, config.data_port, config.acpi_base);
 
-        if platform_mm_control.is_some() {
+        if let Some(ctrl) = platform_mm_control {
             log::debug!(target: "sw_mmi", "Platform MM Control is available. Calling platform-specific init...");
-            platform_mm_control.unwrap().init().inspect_err(|&err| {
+            ctrl.init().inspect_err(|&err| {
                 log::error!(target: "sw_mmi", "Platform MM Control initialization failed: {:?}", err);
             })?;
             log::trace!(target: "sw_mmi", "Platform MM Control initialization completed successfully");
@@ -157,8 +159,10 @@ impl Default for SwMmiManager {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::config::MmCommunicationConfiguration;
-    use crate::service::platform_mm_control::{MockPlatformMmControl, PlatformMmControl};
+    use crate::{
+        config::MmCommunicationConfiguration,
+        service::platform_mm_control::{MockPlatformMmControl, PlatformMmControl},
+    };
     use patina::component::params::Commands;
 
     #[test]

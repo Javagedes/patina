@@ -848,10 +848,13 @@ mod tests {
     use patina_ffs_extractors::CompositeSectionExtractor;
     extern crate alloc;
     use crate::test_collateral;
-    use std::alloc::{Layout, alloc, dealloc};
-    use std::ffi::c_void;
-    use std::ptr;
-    use std::{fs::File, io::Read};
+    use std::{
+        alloc::{Layout, alloc, dealloc},
+        ffi::c_void,
+        fs::File,
+        io::Read,
+        ptr,
+    };
 
     //Populate Null References for error cases
     const BUFFER_SIZE_EMPTY: usize = 0;

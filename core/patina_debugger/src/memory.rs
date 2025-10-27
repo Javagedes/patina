@@ -160,8 +160,7 @@ mod tests {
 
     use crate::*;
     use gdbstub::target::ext::breakpoints;
-    use mockall::predicate::*;
-    use mockall::*;
+    use mockall::{predicate::*, *};
     use patina_paging::{MemoryAttributes, PtResult};
 
     mock! {

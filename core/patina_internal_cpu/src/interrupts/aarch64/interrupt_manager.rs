@@ -19,8 +19,8 @@ use patina_stacktrace::StackTrace;
 
 use crate::interrupts::{
     EfiExceptionStackTrace, EfiSystemContext, HandlerType, InterruptManager, aarch64::ExceptionContextAArch64,
+    disable_interrupts, enable_interrupts,
 };
-use crate::interrupts::{disable_interrupts, enable_interrupts};
 #[cfg(all(not(test), target_arch = "aarch64"))]
 use patina::{read_sysreg, write_sysreg};
 

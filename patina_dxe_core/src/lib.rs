@@ -71,11 +71,6 @@ use alloc::{boxed::Box, vec::Vec};
 use gcd::SpinLockedGcd;
 use memory_manager::CoreMemoryManager;
 use mu_rust_helpers::{function, guid::CALLER_ID};
-use patina::pi::{
-    hob::{HobList, get_c_hob_list_size},
-    protocols::{bds, status_code},
-    status_code::{EFI_PROGRESS_CODE, EFI_SOFTWARE_DXE_CORE, EFI_SW_DXE_CORE_PC_HANDOFF_TO_NEXT},
-};
 use patina::{
     boot_services::StandardBootServices,
     component::{Component, IntoComponent, Storage, service::IntoService},
@@ -83,6 +78,11 @@ use patina::{
     performance::{
         logging::{perf_function_begin, perf_function_end},
         measurement::create_performance_measurement,
+    },
+    pi::{
+        hob::{HobList, get_c_hob_list_size},
+        protocols::{bds, status_code},
+        status_code::{EFI_PROGRESS_CODE, EFI_SOFTWARE_DXE_CORE, EFI_SW_DXE_CORE_PC_HANDOFF_TO_NEXT},
     },
     runtime_services::StandardRuntimeServices,
 };

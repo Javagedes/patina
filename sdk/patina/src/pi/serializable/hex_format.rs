@@ -11,8 +11,7 @@
 
 use alloc::format;
 use core::fmt::LowerHex;
-use serde::Deserialize;
-use serde::{self, Deserializer, Serializer};
+use serde::{self, Deserialize, Deserializer, Serializer};
 
 /// Serialize a number as a hex string with "0x" prefix.
 pub fn serialize<T, S>(num: &T, serializer: S) -> Result<S::Ok, S::Error>

@@ -12,18 +12,24 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use crate::config::{CommunicateBuffer, EfiMmCommunicateHeader, MmCommunicationConfiguration};
-use crate::service::SwMmiTrigger;
-use patina::Guid;
-use patina::component::{
-    IntoComponent, Storage,
-    service::{IntoService, Service},
+use crate::{
+    config::{CommunicateBuffer, EfiMmCommunicateHeader, MmCommunicationConfiguration},
+    service::SwMmiTrigger,
+};
+use patina::{
+    Guid,
+    component::{
+        IntoComponent, Storage,
+        service::{IntoService, Service},
+    },
 };
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
-use core::cell::RefCell;
-use core::fmt::{self, Debug};
+use core::{
+    cell::RefCell,
+    fmt::{self, Debug},
+};
 
 #[cfg(any(test, feature = "mockall"))]
 use mockall::automock;
@@ -277,13 +283,16 @@ impl Default for MmCommunicator {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::component::communicator::{MmCommunicator, MockMmExecutor};
-    use crate::component::sw_mmi_manager::SwMmiManager;
-    use crate::config::{CommunicateBuffer, MmCommunicationConfiguration};
+    use crate::{
+        component::{
+            communicator::{MmCommunicator, MockMmExecutor},
+            sw_mmi_manager::SwMmiManager,
+        },
+        config::{CommunicateBuffer, MmCommunicationConfiguration},
+    };
     use patina::component::{IntoComponent, Storage};
 
-    use core::cell::RefCell;
-    use core::pin::Pin;
+    use core::{cell::RefCell, pin::Pin};
     use r_efi::efi;
 
     extern crate alloc;

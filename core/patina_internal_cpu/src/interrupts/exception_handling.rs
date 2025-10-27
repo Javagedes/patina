@@ -8,8 +8,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 
-use patina::error::EfiError;
-use patina::pi::protocols::cpu_arch::EfiExceptionType;
+use patina::{error::EfiError, pi::protocols::cpu_arch::EfiExceptionType};
 use spin::rwlock::RwLock;
 
 use crate::interrupts::EfiExceptionStackTrace;

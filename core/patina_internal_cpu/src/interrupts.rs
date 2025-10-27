@@ -15,8 +15,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 
-use patina::error::EfiError;
-use patina::pi::protocols::cpu_arch::EfiSystemContext;
+use patina::{error::EfiError, pi::protocols::cpu_arch::EfiSystemContext};
 
 mod exception_handling;
 

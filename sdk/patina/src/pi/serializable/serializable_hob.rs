@@ -13,9 +13,10 @@
 
 use core::cmp::Ordering;
 
-use crate::pi::hob::Hob;
-use crate::pi::serializable::hex_format;
-use crate::pi::{serializable::Interval, serializable::format_guid};
+use crate::pi::{
+    hob::Hob,
+    serializable::{Interval, format_guid, hex_format},
+};
 use alloc::string::String;
 use serde::{Deserialize, Serialize};
 
@@ -415,7 +416,7 @@ mod tests {
         let header = hob::header::Hob { r#type: hob::CPU, length: size_of::<hob::Cpu>() as u16, reserved: 0 };
         let cpu_hob = hob::Cpu { header, size_of_memory_space: 0, size_of_io_space: 0, reserved: [0; 6] };
 
-        let hob_list = vec![
+        let hob_list = [
             Hob::Handoff(&handoff_hob),
             Hob::ResourceDescriptor(&resource_desc_hob),
             Hob::MemoryAllocation(&memory_alloc_hob),

@@ -15,8 +15,10 @@ use core::{
 use alloc::ffi::CString;
 use r_efi::efi;
 
-use crate::performance::{Measurement, globals::get_perf_measurement_mask, record::known::KnownPerfId};
-use crate::uefi_protocol::performance_measurement::{CreateMeasurement, PerfAttribute};
+use crate::{
+    performance::{Measurement, globals::get_perf_measurement_mask, record::known::KnownPerfId},
+    uefi_protocol::performance_measurement::{CreateMeasurement, PerfAttribute},
+};
 
 /// Create performance record
 ///

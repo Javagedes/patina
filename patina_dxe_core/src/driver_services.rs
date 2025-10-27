@@ -6,7 +6,10 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use alloc::{collections::BTreeMap, collections::BTreeSet, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use core::ptr::NonNull;
 use patina::{
     error::EfiError,
@@ -535,13 +538,12 @@ pub fn init_driver_services(bs: &mut efi::BootServices) {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::protocol_db::DXE_CORE_HANDLE;
-    use crate::test_support;
-    use core::ffi::c_void;
-    use core::ptr;
-    use std::str::FromStr;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
+    use crate::{protocol_db::DXE_CORE_HANDLE, test_support};
+    use core::{ffi::c_void, ptr};
+    use std::{
+        str::FromStr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
     use uuid::Uuid;
 
     // =================== TEST HELPER STATICS ===================

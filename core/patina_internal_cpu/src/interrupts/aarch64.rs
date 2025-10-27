@@ -7,8 +7,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 use crate::log_registers;
-use patina::error::EfiError;
-use patina::pi::protocols::cpu_arch::EfiSystemContext;
+use patina::{error::EfiError, pi::protocols::cpu_arch::EfiSystemContext};
 use patina_stacktrace::StackTrace;
 
 cfg_if::cfg_if! {

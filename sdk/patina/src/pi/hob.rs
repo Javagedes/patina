@@ -92,8 +92,7 @@ use indoc::indoc;
 
 // Expectation is someone will provide alloc
 extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 // If the target is x86_64, then EfiPhysicalAddress is u64
 #[cfg(target_arch = "x86_64")]

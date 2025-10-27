@@ -13,8 +13,7 @@ use crate::{
     runtime_services::StandardRuntimeServices,
 };
 
-use crate::OwnedGuid;
-use crate::boot_services::StandardBootServices;
+use crate::{OwnedGuid, boot_services::StandardBootServices};
 use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use core::{
     any::{Any, TypeId},

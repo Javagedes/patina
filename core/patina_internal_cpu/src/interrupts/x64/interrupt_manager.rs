@@ -9,15 +9,18 @@
 
 use core::arch::global_asm;
 use lazy_static::lazy_static;
-use patina::base::SIZE_4GB;
-use patina::base::{UEFI_PAGE_MASK, UEFI_PAGE_SIZE};
-use patina::pi::protocols::cpu_arch::EfiSystemContext;
-use patina::{component::service::IntoService, error::EfiError};
+use patina::{
+    base::{SIZE_4GB, UEFI_PAGE_MASK, UEFI_PAGE_SIZE},
+    component::service::IntoService,
+    error::EfiError,
+    pi::protocols::cpu_arch::EfiSystemContext,
+};
 use patina_paging::{PageTable, PagingType};
 use patina_stacktrace::StackTrace;
-use x86_64::VirtAddr;
-use x86_64::structures::idt::InterruptDescriptorTable;
-use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::{
+    VirtAddr,
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
+};
 
 use crate::interrupts::{EfiExceptionStackTrace, HandlerType, InterruptManager, x64::ExceptionContextX64};
 

@@ -20,12 +20,9 @@
 //!
 extern crate alloc;
 use alloc::vec::Vec;
-use core::fmt;
-use core::pin::Pin;
-use core::ptr::NonNull;
+use core::{fmt, pin::Pin, ptr::NonNull};
 
-use patina::Guid;
-use patina::base::UEFI_PAGE_MASK;
+use patina::{Guid, base::UEFI_PAGE_MASK};
 use r_efi::efi;
 
 /// Management Mode (MM) Configuration
