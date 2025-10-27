@@ -620,7 +620,7 @@ const fn guid_from_str(s: &str) -> core::result::Result<r_efi::efi::Guid, GuidEr
     Ok(r_efi::efi::Guid::from_fields(let_low, time_mid, time_hi_and_version, clk_seq_hi_res, clk_seq_low, &node))
 }
 
-/// Converts a single hex character (represented as a u8) to it's corresponding u8 value
+/// Converts a single hex character (represented as a char) to its corresponding u8 value
 ///
 /// ## Panics
 ///
