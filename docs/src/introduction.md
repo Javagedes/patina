@@ -32,7 +32,7 @@ with Patina, there are two main crates that you should review:
 
 **1. [patina_dxe_core](https://crates.io/crates/patina_dxe_core):** The library crate containing the [Patina DXE Core](https://docs.rs/patina_dxe_core/latest/patina_dxe_core/struct.Core.html)
 struct definition. This struct is instantiated and configured by a platform in their own respective binary crate,
-which ultimetly compiles to an EFI.
+which ultimately compiles to an EFI binary.
 
 **2. [patina](https://crates.io/crates/patina):** The SDK for working with Patina, whether you are creating a Patina
 component or developing the Patina DXE core.
