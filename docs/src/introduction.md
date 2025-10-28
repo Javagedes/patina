@@ -12,10 +12,10 @@ details to provide a more secure runtime, so we are not fully PI spec compliant.
 platform requirements that differ from a non-Patina implementation. See [Patina Requirements](integrate/patina_dxe_core_requirements.md)
 for more information regarding this.
 
-**This book is the "catch-all" for Patina:** it contains various categories of documentation regarding Patina that can
-be broken up into these 5 categories:
+**This book is the "catch-all" for Patina:** it contains various documentation regarding Patina that can be broken up
+into these 5 categories:
 
-1. Background of Patina and it's goals.
+1. Background of Patina and its goals.
 2. Integrating the Patina code into your platform.
 3. Developing Patina components.
 4. Contributing to Patina.
@@ -26,12 +26,12 @@ the project's goals and design philosophy.
 
 ## Important Crates and Repositories
 
-While the Patina project maintains a large list of distinct crates throughout our various repositories (See
-[below](#all-repositories)), these are almost entirely logical separation of code to support proper decoupling and
-faster build times. If you are just starting with Patina, the project has two main crates that you should review:
+The Patina project maintains a large list of distinct crates throughout our various repositories
+(See [below](#all-repositories)) in order to support proper decoupling and faster build times. If you are just starting
+with Patina, there are two main crates that you should review:
 
 **1. [patina_dxe_core](https://crates.io/crates/patina_dxe_core):** The library crate containing the Patina DXE Core,
-which is customized and extended for each individual platform.
+which is instantiated and configured for each individual platform..
 
 **2. [patina](https://crates.io/crates/patina):** The SDK for working with Patina, whether you are creating a Patina
 component or developing the Patina DXE core.
@@ -40,22 +40,22 @@ In addition to this, there are two additional repositories you should review, wh
 as a platform's DXE Core:
 
 **1. [patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu):** A repository containing
-two distinct implementations / configurations of the `patina_dxe_core` library crate for our Q35 and SBSA virtual
-platforms.
+two distinct configurations of the `patina_dxe_core` library crate for our Q35 and SBSA virtual platforms.
 
 **2. [patina-qemu](https://github.com/OpenDevicePartnership/patina-qemu/):** A repository containing two virtual
 platforms (Q35, SBSA) that run on QEMU.
 
 ## Putting it all together
 
-The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the bare-bones UEFI spec compliant
-Patina DXE Core. The Core produces the [EFI System Table](https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html)
-(with the core provided services) and a UEFI spec compliant [DXE Dispatcher](https://uefi.org/specs/PI/1.8/V2_DXE_Dispatcher.html).
+The [patina-dxe-core](https://crates.io/crates/patina_dxe_core) crate provides the UEFI spec compliant Patina DXE Core.
+The Core produces the [EFI System Table](https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html) (with the core
+provided services) and a PI spec compliant* [DXE Dispatcher](https://uefi.org/specs/PI/1.8/V2_DXE_Dispatcher.html).
 
 Outside of UEFI spec compliance, platforms can attach Patina Components, which are conceptually similar to UEFI
 components, but are pure Rust and monolithically compiled with the Patina DXE Core. Some components are written and
-maintained by Patina, but are still optional. We are expecting that new components will be written by platform
-maintainers. These may be specific to their platform or generic for the Patina ecosystem. See [Patina Component Model](component/getting_started.md)
+maintained by Patina, but are still optional. Over time, the Patina project will add more generically useful
+components. We are expecting that additional components will be written by platform maintainers. These may be specific
+to their platform or generic for the Patina ecosystem. See [Patina Component Model](component/getting_started.md)
 for more information.
 
 ```mermaid
