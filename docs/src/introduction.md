@@ -30,8 +30,9 @@ The Patina project maintains a large list of distinct crates throughout our vari
 (See [below](#all-repositories)) in order to support proper decoupling and faster build times. If you are just starting
 with Patina, there are two main crates that you should review:
 
-**1. [patina_dxe_core](https://crates.io/crates/patina_dxe_core):** The library crate containing the Patina DXE Core,
-which is instantiated and configured for each individual platform..
+**1. [patina_dxe_core](https://crates.io/crates/patina_dxe_core):** The library crate containing the [Patina DXE Core](https://docs.rs/patina_dxe_core/latest/patina_dxe_core/struct.Core.html)
+struct definition. This struct is instantiated and configured by a platform in their own respective binary crate,
+which ultimetly compiles to an EFI.
 
 **2. [patina](https://crates.io/crates/patina):** The SDK for working with Patina, whether you are creating a Patina
 component or developing the Patina DXE core.
