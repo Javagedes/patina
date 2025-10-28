@@ -24,16 +24,17 @@ The Patina performance component maintains the infrastructure to report firmware
 Enabling performance in Patina is done by adding the `Performance` component to the
 [Patina DXE Core](https://crates.io/crates/patina_dxe_core) build.
 
-```rust
-// ...
+```rust,no_run
+# extern crate patina_dxe_core;
+# extern crate patina_performance;
+use patina_dxe_core::Core;
 
+# let hob_list = core::ptr::null();
 Core::default()
- // ...
- .with_component(patina_performance::Performance)
+ .init_memory(hob_list)
+ .with_component(patina_performance::component::Performance)
  .start()
  .unwrap();
-
-// ...
 ```
 
 > **Note:** Performance measurements for a given platform may need to be enabled. For example, if building in
@@ -41,12 +42,15 @@ Core::default()
 
 The Patina performance component uses a feature mask in its configuration to control how performance is measured.
 
-```rust
-
-// ...
+```rust,no_run
+# extern crate patina_dxe_core;
+# extern crate patina_performance;
+# extern crate patina;
+# let hob_list = core::ptr::null();
+use patina_dxe_core::Core;
 
 Core::default()
- // ...
+ .init_memory(hob_list)
  .with_config(patina_performance::config::PerfConfig {
      enable_component: true,
      enabled_measurements: {
@@ -57,7 +61,7 @@ Core::default()
         | patina::performance::Measurement::StartImage               // Adds start image measurements.
      }
  })
- .with_component(patina_performance::component::Performance))
+ .with_component(patina_performance::component::Performance)
  .start()
  .unwrap();
 
@@ -101,16 +105,30 @@ external component.
 
 *Example of measurement from within the core:*
 
-```rust
+```rust,no_run
+# extern crate mu_rust_helpers;
+# extern crate patina;
+use patina::performance::{
+   logging::perf_function_begin,
+   measurement::create_performance_measurement,
+};
 use mu_rust_helpers::guid::CALLER_ID;
 
-perf_function_begin("foo" &CALLER_ID, create_performance_measurement);
+perf_function_begin("foo", &CALLER_ID, create_performance_measurement);
 ```
 
 *Example of measurement from outside the core:*
 
-```rust
+```rust,no_run
+# extern crate mu_rust_helpers;
+# extern crate patina;
+# let bs = patina::boot_services::StandardBootServices::new_uninit();
 use mu_rust_helpers::guid::CALLER_ID;
+use patina::{
+   boot_services::BootServices,
+   performance::logging::perf_function_begin,
+   uefi_protocol::performance_measurement::EdkiiPerformanceMeasurement,
+};
 
 let create_performance_measurement = unsafe { bs.locate_protocol::<EdkiiPerformanceMeasurement>(None) }
  .map_or(None, |p| Some(p.create_performance_measurement));
