@@ -15,15 +15,13 @@
 
 use core::ffi::c_char;
 
-use patina::{boot_services::StandardBootServices, tpl_mutex::TplMutex, uefi_protocol::ProtocolInterface};
+use patina::{component::service::Service, uefi_protocol::ProtocolInterface};
 use r_efi::efi;
 
 use crate::{
     error::SmbiosError,
-    service::{SMBIOS_HANDLE_PI_RESERVED, SmbiosHandle, SmbiosTableHeader, SmbiosType},
+    service::{SMBIOS_HANDLE_PI_RESERVED, Smbios, SmbiosHandle, SmbiosTableHeader, SmbiosType},
 };
-
-use super::core::SmbiosManager;
 
 #[repr(C)]
 pub(super) struct SmbiosProtocol {
@@ -42,7 +40,7 @@ pub(super) struct SmbiosProtocolInternal {
     pub(super) protocol: SmbiosProtocol,
 
     // Internal component access only! Does not exist in C definition
-    pub(super) manager: &'static TplMutex<'static, SmbiosManager, StandardBootServices>,
+    pub(super) service: Service<dyn Smbios>,
 
     // Storage for header returned by C protocol's get_next
     // Avoids heap allocation - reused across calls
@@ -96,11 +94,11 @@ impl SmbiosProtocolInternal {
     pub(super) fn new(
         major_version: u8,
         minor_version: u8,
-        manager: &'static TplMutex<'static, SmbiosManager, StandardBootServices>,
+        service: Service<dyn Smbios>,
     ) -> Self {
         Self {
             protocol: SmbiosProtocol::new(major_version, minor_version),
-            manager,
+            service,
             header_buffer: core::cell::UnsafeCell::new(SmbiosTableHeader::new(0, 0, 0)),
         }
     }
@@ -128,7 +126,7 @@ impl SmbiosProtocol {
         // SAFETY: We must trust the C code was a responsible steward of this pointer
         // Cast from protocol pointer to internal struct pointer
         let internal = unsafe { &*(protocol as *const SmbiosProtocolInternal) };
-        let manager = internal.manager.lock();
+        let service = &internal.service;
 
         // SAFETY: The C UEFI protocol caller guarantees that `record` points to a valid,
         // complete SMBIOS record. We read the length field to determine the full record size.
@@ -173,7 +171,7 @@ impl SmbiosProtocol {
             let producer_opt = if producer_handle.is_null() { None } else { Some(producer_handle) };
 
             // Add the record
-            match manager.add_from_bytes(producer_opt, full_record_bytes) {
+            match service.add_from_bytes(producer_opt, full_record_bytes) {
                 Ok(handle) => {
                     *smbios_handle = handle;
                     efi::Status::SUCCESS
@@ -205,7 +203,7 @@ impl SmbiosProtocol {
 
         // SAFETY: Cast from protocol pointer to internal struct pointer
         let internal = unsafe { &*(protocol as *const SmbiosProtocolInternal) };
-        let manager = internal.manager.lock();
+        let service = &internal.service;
 
         unsafe {
             let handle = *smbios_handle;
@@ -218,7 +216,7 @@ impl SmbiosProtocol {
                 Err(_) => return efi::Status::INVALID_PARAMETER,
             };
 
-            match manager.update_string(handle, str_num, rust_str) {
+            match service.update_string(handle, str_num, rust_str) {
                 Ok(()) => efi::Status::SUCCESS,
                 Err(SmbiosError::StringContainsNull) => efi::Status::INVALID_PARAMETER,
                 Err(SmbiosError::HandleNotFound) => efi::Status::NOT_FOUND,
@@ -233,9 +231,9 @@ impl SmbiosProtocol {
     extern "efiapi" fn remove_ext(protocol: *const SmbiosProtocol, smbios_handle: SmbiosHandle) -> efi::Status {
         // SAFETY: Cast from protocol pointer to internal struct pointer
         let internal = unsafe { &*(protocol as *const SmbiosProtocolInternal) };
-        let manager = internal.manager.lock();
+        let service = &internal.service;
 
-        match manager.remove(smbios_handle) {
+        match service.remove(smbios_handle) {
             Ok(()) => efi::Status::SUCCESS,
             Err(SmbiosError::HandleNotFound) => efi::Status::NOT_FOUND,
             Err(_) => efi::Status::DEVICE_ERROR,
@@ -256,14 +254,14 @@ impl SmbiosProtocol {
 
         // SAFETY: Cast from protocol pointer to internal struct pointer
         let internal = unsafe { &*(protocol as *const SmbiosProtocolInternal) };
-        let manager = internal.manager.lock();
+        let service = &internal.service;
 
         unsafe {
             let handle = *smbios_handle;
             let type_filter = if record_type.is_null() { None } else { Some(*record_type) };
 
             // Use the iterator to find the next record
-            let mut iter = manager.iter(type_filter);
+            let mut iter = service.iter(type_filter);
 
             // Skip records until we find the one after the current handle
             let next_record = if handle == SMBIOS_HANDLE_PI_RESERVED {

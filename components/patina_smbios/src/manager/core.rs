@@ -16,8 +16,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use core::cell::RefCell;
 use patina::{
     boot_services::{
-        BootServices,
-        allocation::{AllocType, MemoryType},
+        BootServices, StandardBootServices, allocation::{AllocType, MemoryType}
     },
     uefi_size_to_pages,
 };
@@ -31,8 +30,7 @@ use zerocopy_derive::{Immutable, IntoBytes as DeriveIntoBytes};
 use crate::{
     error::SmbiosError,
     service::{
-        SMBIOS_HANDLE_PI_RESERVED, SMBIOS_STRING_MAX_LENGTH, SmbiosHandle, SmbiosRecordsIter, SmbiosTableHeader,
-        SmbiosType,
+        SMBIOS_HANDLE_PI_RESERVED, SMBIOS_STRING_MAX_LENGTH, Smbios, SmbiosHandle, SmbiosRecordsIter, SmbiosTableHeader, SmbiosType
     },
 };
 
@@ -77,7 +75,7 @@ pub struct Smbios30EntryPoint {
 ///
 /// Manages SMBIOS records, handles, and table generation.
 pub struct SmbiosManager {
-    pub(super) records: RefCell<Vec<SmbiosRecord>>,
+    pub(crate) records: RefCell<Vec<SmbiosRecord>>,
     pub(super) next_handle: RefCell<SmbiosHandle>,
     pub(super) freed_handles: RefCell<Vec<SmbiosHandle>>,
     pub major_version: u8,
@@ -548,28 +546,6 @@ impl SmbiosManager {
         }
 
         Ok(())
-    }
-
-    /// Create an iterator over SMBIOS records
-    ///
-    /// This is a convenience method for Rust code that has direct access
-    /// to `SmbiosManager`. It provides idiomatic Rust iteration over records.
-    ///
-    /// **Note**: When using SMBIOS through the component service interface
-    /// (`Service<dyn SmbiosRecords>`), this iterator method is not available
-    /// due to trait object lifetime constraints. In production, SMBIOS records
-    /// are typically added during DXE phase then published for OS access.
-    ///
-    /// # Arguments
-    ///
-    /// * `record_type` - Optional filter for specific record type. `None` to
-    ///   iterate all records, `Some(type)` to filter by specific type.
-    ///
-    /// # Returns
-    ///
-    /// Returns an iterator yielding tuples of `(SmbiosTableHeader, Option<Handle>)`.
-    pub fn iter(&self, record_type: Option<SmbiosType>) -> SmbiosRecordsIter<'_> {
-        SmbiosRecordsIter::new(self.records.borrow(), record_type)
     }
 }
 

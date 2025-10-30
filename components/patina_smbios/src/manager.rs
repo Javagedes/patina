@@ -14,7 +14,7 @@
 
 extern crate alloc;
 
-use patina::uefi_protocol::ProtocolInterface;
+use patina::{component::service::Service, uefi_protocol::ProtocolInterface};
 
 mod core;
 mod protocol;
@@ -28,11 +28,10 @@ use alloc::boxed::Box;
 
 use patina::{
     boot_services::{BootServices, StandardBootServices},
-    tpl_mutex::TplMutex,
 };
 use r_efi::efi;
 
-use crate::error::SmbiosError;
+use crate::{error::SmbiosError, service::Smbios};
 
 use self::protocol::{SmbiosProtocol, SmbiosProtocolInternal};
 
@@ -51,11 +50,11 @@ use self::protocol::{SmbiosProtocol, SmbiosProtocolInternal};
 pub fn install_smbios_protocol(
     major_version: u8,
     minor_version: u8,
-    manager_mutex: &'static TplMutex<'static, SmbiosManager, StandardBootServices>,
+    service: Service<dyn Smbios>,
     boot_services: &'static StandardBootServices,
 ) -> Result<efi::Handle, SmbiosError> {
     // Create the protocol instance with internal struct
-    let internal = SmbiosProtocolInternal::new(major_version, minor_version, manager_mutex);
+    let internal = SmbiosProtocolInternal::new(major_version, minor_version, service);
     let interface = Box::into_raw(Box::new(internal));
 
     // Install the protocol using the unchecked interface since we have a raw pointer

@@ -12,9 +12,13 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use core::cell::Ref;
+use patina::{boot_services::StandardBootServices, component::service::Service, tpl_mutex::TplMutex};
+use patina_macro::IntoService;
+use core::{cell::Ref, marker::PhantomData};
 use r_efi::efi::Handle;
 use zerocopy_derive::{FromBytes, Immutable, IntoBytes as DeriveIntoBytes, KnownLayout};
+
+use crate::{error::SmbiosError, manager::{SmbiosManager, SmbiosRecord}};
 
 /// SMBIOS record handle type (16-bit identifier)
 pub type SmbiosHandle = u16;
@@ -67,15 +71,16 @@ impl SmbiosTableHeader {
 /// all records are returned. If `Some(type)` is provided, only records of
 /// that type are returned.
 pub struct SmbiosRecordsIter<'a> {
-    records: Ref<'a, Vec<crate::manager::SmbiosRecord>>,
+    records: Vec<crate::manager::SmbiosRecord>,
     position: usize,
     filter_type: Option<SmbiosType>,
+    pt: PhantomData<&'a ()>,
 }
 
 impl<'a> SmbiosRecordsIter<'a> {
     /// Create a new iterator over SMBIOS records
-    pub(crate) fn new(records: Ref<'a, Vec<crate::manager::SmbiosRecord>>, filter_type: Option<SmbiosType>) -> Self {
-        Self { records, position: 0, filter_type }
+    pub(crate) fn new(records: Vec<crate::manager::SmbiosRecord>, filter_type: Option<SmbiosType>) -> Self {
+        Self { records, position: 0, filter_type, pt: PhantomData }
     }
 }
 
@@ -114,7 +119,7 @@ impl<'a> Iterator for SmbiosRecordsIter<'a> {
 ///
 /// ```ignore
 /// fn entry_point(
-///     smbios: Service<Smbios>,
+///     smbios: Service<dyn Smbios>,
 /// ) -> Result<()> {
 ///     // Add structured records
 ///     smbios.add_record(None, &bios_info)?;
@@ -124,31 +129,13 @@ impl<'a> Iterator for SmbiosRecordsIter<'a> {
 ///     Ok(())
 /// }
 /// ```
-#[derive(patina::component::service::IntoService)]
-#[service(Smbios)]
-pub struct Smbios {
-    pub(crate) manager: patina::tpl_mutex::TplMutex<
-        'static,
-        crate::manager::SmbiosManager,
-        patina::boot_services::StandardBootServices,
-    >,
-    pub(crate) boot_services: &'static patina::boot_services::StandardBootServices,
-    pub(crate) major_version: u8,
-    pub(crate) minor_version: u8,
-}
-
-// Methods below are tested via integration (Q35 platform component)
-// They require StandardBootServices and TplMutex which aren't mockable in unit tests
-#[cfg_attr(coverage_nightly, coverage(off))]
-impl Smbios {
+pub trait Smbios {
     /// Gets the SMBIOS version information.
     ///
     /// # Returns
     ///
     /// A tuple of (major_version, minor_version).
-    pub fn version(&self) -> (u8, u8) {
-        (self.major_version, self.minor_version)
-    }
+    fn version(&self) -> (u8, u8);
 
     /// Publishes the SMBIOS table to the UEFI Configuration Table
     ///
@@ -167,13 +154,9 @@ impl Smbios {
     /// - No records have been added
     /// - Memory allocation fails
     /// - Configuration table installation fails
-    pub fn publish_table(
+    fn publish_table(
         &self,
-    ) -> core::result::Result<(r_efi::efi::PhysicalAddress, r_efi::efi::PhysicalAddress), crate::error::SmbiosError>
-    {
-        let manager = self.manager.lock();
-        manager.publish_table(self.boot_services)
-    }
+    ) -> core::result::Result<(r_efi::efi::PhysicalAddress, r_efi::efi::PhysicalAddress), crate::error::SmbiosError>;
 
     /// Updates a string in an existing SMBIOS record.
     ///
@@ -182,26 +165,30 @@ impl Smbios {
     /// * `smbios_handle` - Handle of the record to update
     /// * `string_number` - 1-based index of the string to update
     /// * `string` - New string value
-    pub fn update_string(
+    fn update_string(
         &self,
         smbios_handle: SmbiosHandle,
         string_number: usize,
         string: &str,
-    ) -> core::result::Result<(), crate::error::SmbiosError> {
-        let manager = self.manager.lock();
-        manager.update_string(smbios_handle, string_number, string)
-    }
+    ) -> core::result::Result<(), crate::error::SmbiosError>;
 
     /// Removes an SMBIOS record from the SMBIOS table.
     ///
     /// # Arguments
     ///
     /// * `smbios_handle` - Handle of the record to remove
-    pub fn remove(&self, smbios_handle: SmbiosHandle) -> core::result::Result<(), crate::error::SmbiosError> {
-        let manager = self.manager.lock();
-        manager.remove(smbios_handle)
-    }
+    fn remove(&self, smbios_handle: SmbiosHandle) -> core::result::Result<(), crate::error::SmbiosError>;
 
+    fn add_from_bytes(
+        &self,
+        producer_handle: Option<Handle>,
+        record_data: &[u8],
+    ) -> Result<SmbiosHandle, SmbiosError>;
+
+    fn iter<'a>(&'a self, record_type: Option<SmbiosType>) -> SmbiosRecordsIter<'a>;
+}
+
+trait SmbiosExt {
     /// Add an SMBIOS record from a structured type.
     ///
     /// This is a type-safe convenience method that automatically serializes
@@ -222,7 +209,15 @@ impl Smbios {
     /// let bios_info = Type0PlatformFirmwareInformation { ... };
     /// let handle = smbios.add_record(None, &bios_info)?;
     /// ```
-    pub fn add_record<T>(
+    fn add_record<T: crate::smbios_record::SmbiosRecordStructure>(
+        &self,
+        producer_handle: Option<r_efi::efi::Handle>,
+        record: &T,
+    ) -> core::result::Result<SmbiosHandle, crate::error::SmbiosError>;
+}
+
+impl SmbiosExt for Service<dyn Smbios> {
+    fn add_record<T>(
         &self,
         producer_handle: Option<r_efi::efi::Handle>,
         record: &T,
@@ -231,9 +226,69 @@ impl Smbios {
         T: crate::smbios_record::SmbiosRecordStructure,
     {
         let bytes = record.to_bytes();
-        // Delegate to the manager
-        let manager = self.manager.lock(); // TPL raised to NOTIFY
-        manager.add_from_bytes(producer_handle, &bytes)
+        // Delegate to the underlying service implementation
+        self.add_from_bytes(producer_handle, &bytes)
+    }
+}
+
+#[derive(IntoService)]
+#[service(dyn Smbios)]
+pub struct StandardSmBios {
+    version: (u8, u8),
+    bs: &'static StandardBootServices,
+    manager: TplMutex<'static, SmbiosManager>,
+}
+
+impl StandardSmBios {
+    pub fn new(
+        manager: TplMutex<'static, SmbiosManager>,
+        bs: &'static StandardBootServices,
+        major_version: u8,
+        minor_version: u8,
+    ) -> Self {
+        Self {
+            version: (major_version, minor_version),
+            bs,
+            manager,
+        }
+    }
+}
+
+impl Smbios for StandardSmBios {
+    fn version(&self) -> (u8, u8) {
+        self.version
+    }
+
+    fn publish_table(
+        &self,
+    ) -> core::result::Result<(r_efi::efi::PhysicalAddress, r_efi::efi::PhysicalAddress), crate::error::SmbiosError> {
+        self.manager.lock().publish_table(self.bs)
+    }
+
+    fn update_string(
+        &self,
+        smbios_handle: SmbiosHandle,
+        string_number: usize,
+        string: &str,
+    ) -> core::result::Result<(), crate::error::SmbiosError> {
+        self.manager.lock().update_string(smbios_handle, string_number, string)
+    }
+
+    fn remove(&self, smbios_handle: SmbiosHandle) -> core::result::Result<(), crate::error::SmbiosError> {
+        self.manager.lock().remove(smbios_handle)
+    }
+
+    fn add_from_bytes(
+        &self,
+        producer_handle: Option<Handle>,
+        record_data: &[u8],
+    ) -> Result<SmbiosHandle, SmbiosError> {
+        self.manager.lock().add_from_bytes(producer_handle, record_data)
+    }
+
+    fn iter(&self, record_type: Option<SmbiosType>) -> SmbiosRecordsIter<'_> {
+        let x = self.manager.lock().records.borrow().iter().cloned().collect::<Vec<_>>();
+        SmbiosRecordsIter::new(x, record_type)
     }
 }
 

@@ -20,6 +20,7 @@ use r_efi::efi::Handle;
 /// Internal SMBIOS record representation
 ///
 /// This implementation is for SMBIOS 3.0+ specification which uses 64-bit addressing.
+#[derive(Clone)]
 pub struct SmbiosRecord {
     /// SMBIOS table header
     pub header: SmbiosTableHeader,

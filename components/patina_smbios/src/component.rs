@@ -12,7 +12,7 @@ extern crate alloc;
 use crate::{
     error::SmbiosError,
     manager::{SmbiosManager, install_smbios_protocol},
-    service::Smbios,
+    service::{Smbios, StandardSmBios},
 };
 use patina::{
     boot_services::tpl::Tpl,
@@ -116,22 +116,22 @@ impl SmbiosProvider {
         // Register unified SMBIOS service with all operations
         // The service registration system leaks the entire service struct (including manager)
         // Version is stored directly to avoid TplMutex overhead for immutable data access
-        storage.add_service(Smbios {
-            manager: manager_mutex,
-            boot_services: boot_services_static,
-            major_version: cfg.major_version,
-            minor_version: cfg.minor_version,
-        });
+        storage.add_service(StandardSmBios::new(
+            manager_mutex,
+            boot_services_static,
+            cfg.major_version,
+            cfg.minor_version,
+        ));
 
         // Get the service we just registered to use for protocol installation
         // This avoids needing a separate leaked reference for the protocol
-        let service: patina::component::service::Service<Smbios> =
+        let service: patina::component::service::Service<dyn Smbios> =
             storage.get_service().expect("Service was registered immediately above");
 
         // Install the C/EDKII protocol using the manager from the service
         // The service provides access to the manager reference
         if let Err(e) =
-            install_smbios_protocol(cfg.major_version, cfg.minor_version, &service.manager, boot_services_static)
+            install_smbios_protocol(cfg.major_version, cfg.minor_version, service, boot_services_static)
         {
             log::error!("Failed to install SMBIOS protocol: {:?}", e);
         }
