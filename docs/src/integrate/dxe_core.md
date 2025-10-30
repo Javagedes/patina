@@ -164,14 +164,13 @@ convention. This is an example of a minimal scaffold:
 While Patina does not use the `std` library, it does use the Rust [`core`](https://doc.rust-lang.org/core/) library.
 ```
 
-```rust
-#![cfg(all(target_os = "uefi"))]
-#![no_std]
-#![no_main]
-
+```rust,no_run
+// #![no_std] // Commented out for mdbook compilation purposes
+// #![no_main] // Commented out for mdbook compilation purposes
+# extern crate core;
 use core::{ffi::c_void, panic::PanicInfo};
 
-#[panic_handler]
+#[cfg_attr(target_os="uefi", panic_handler)]
 fn panic(info: &PanicInfo) -> ! {
         // Consider integrating logging and debugging before final deployment.
         loop {}
@@ -182,6 +181,7 @@ pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
         // Core initialization inserted in later steps
         loop {}
 }
+# fn main() {}
 ```
 
 Key points:
@@ -202,6 +202,11 @@ helpers are also available.
 Add representative initialization (replace or augment extractors to match platform requirements):
 
 ```rust
+# extern crate patina;
+# extern crate patina_dxe_core;
+# extern crate patina_ffs_extractors;
+# extern crate core;
+use core::ffi::c_void;
 use patina_dxe_core::Core;
 use patina_ffs_extractors::BrotliSectionExtractor;
 
@@ -235,25 +240,21 @@ target (MMIO vs I/O space). Below are platform patterns.
 
 ### 6.1 Logger Configuration Examples
 
-#### X86_64 Example (Q35)
+In this example, we will talk about how to configure the loggers provided by Patina. The `SerialLogger` and
+`AdvancedLogger` both have the same `new` method interface, so we will pick one for this example:
 
 ```rust
-use patina::log::serial_logger::SerialLogger;
-use patina::serial::uart::Uart16550;
+# extern crate patina;
+# extern crate log;
+use patina::serial::uart::UartNull; // UartPl011 (AARCH64) and Uart16550 (X64) exist
+use patina::log::{Format, SerialLogger};
+use log::LevelFilter;
 
-static LOGGER: SerialLogger<Uart16550> = SerialLogger::new(
-    Uart16550::Io { base: 0x402 },  // <- Update this I/O port for your platform
-);
-```
-
-#### AARCH64 Example (SBSA)
-
-```rust
-use patina::log::serial_logger::SerialLogger;
-use patina::serial::uart::UartPl011;
-
-static LOGGER: SerialLogger<UartPl011> = SerialLogger::new(
-    UartPl011::new(0x6000_0000),  // <- Update this MMIO address for your platform
+const LOGGER: SerialLogger<UartNull> = SerialLogger::new(
+    Format::Standard, // The style to log in - standard, json, verbose json
+    &[("goblin", LevelFilter::Off)], // (target, filter) tuple to filter certain log targets to certain levels
+    LevelFilter::Warn, // Only log certain log levels and higher
+    UartNull {}, // The SerialIO to write to. Could be a custom implementation
 );
 ```
 
@@ -261,33 +262,21 @@ static LOGGER: SerialLogger<UartPl011> = SerialLogger::new(
 
 Modify the `DEBUGGER` static to match your platform's debug serial infrastructure:
 
-#### X86_64 Example
-
 ```rust
+# extern crate patina;
+# extern crate patina_debugger;
+use patina::serial::uart::UartNull; // UartPl011 (AARCH64) and Uart16550 (X64) exist
+
 #[cfg(feature = "enable_debugger")]
 const _ENABLE_DEBUGGER: bool = true;
 #[cfg(not(feature = "enable_debugger"))]
 const _ENABLE_DEBUGGER: bool = false;
 
 #[cfg(feature = "build_debugger")]
-static DEBUGGER: patina_debugger::PatinaDebugger<Uart16550> =
-    patina_debugger::PatinaDebugger::new(Uart16550::Io { base: 0x3F8 })  // <- Update for your platform
+static DEBUGGER: patina_debugger::PatinaDebugger<UartNull> =
+    patina_debugger::PatinaDebugger::new(UartNull {})  // <- Update for your platform
         .with_force_enable(_ENABLE_DEBUGGER)
         .with_log_policy(patina_debugger::DebuggerLoggingPolicy::FullLogging);
-```
-
-#### AARCH64 Example
-
-```rust
-#[cfg(feature = "enable_debugger")]
-const _ENABLE_DEBUGGER: bool = true;
-#[cfg(not(feature = "enable_debugger"))]
-const _ENABLE_DEBUGGER: bool = false;
-
-#[cfg(feature = "build_debugger")]
-static DEBUGGER: patina_debugger::PatinaDebugger<UartPl011> =
-    patina_debugger::PatinaDebugger::new(UartPl011::new(0x6000_0000))  // <- Update for your platform
-        .with_force_enable(_ENABLE_DEBUGGER);
 ```
 
 #### Adding a Logger Example
@@ -298,16 +287,26 @@ First, add the logger dependency to your Cargo.toml file in the crate:
 patina = "$(VERSION)"  # includes serial_logger
 ```
 
-Next, update main.rs with the following:
+Next, update main.rs with the following, using Uart16550 or UartPl011 for X64 / AARCH64.
 
 ```rust
+# extern crate patina_dxe_core;
+# extern crate patina_ffs_extractors;
+# extern crate patina;
+# extern crate log;
+# extern crate core;
+use core::ffi::c_void;
+
 use patina_dxe_core::Core;
 use patina_ffs_extractors::BrotliSectionExtractor;
-use patina::log::serial_logger::SerialLogger;
-use patina::serial::uart::Uart16550;
+use patina::log::{Format, SerialLogger};
+use patina::serial::uart::UartNull; // Uart16550 or UartPl011 available for X64 / AARCH64 platforms
 
-static LOGGER: SerialLogger<Uart16550> = SerialLogger::new(
-    Uart16550::Io { base: 0x402 },
+static LOGGER: SerialLogger<UartNull> = SerialLogger::new(
+    Format::Standard, // Format to write logs in
+    &[], // filters [(target, log_level)]
+    log::LevelFilter::Debug, // filter level
+    UartNull {} // The SerialIO writer
 );
 
 #[cfg_attr(target_os = "uefi", export_name = "efi_main")]
@@ -326,7 +325,7 @@ pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
 Note:
 
 - The logger is created as a static instance configured for your platform's UART.
-  - In this case we are writing to port `0x402` via `Uart16550`. Your platform may require a different writer.
+  - In this case we are writing to the Host-based STD Terminal. Your platform will require a different writer.
 - Inside `efi_main` we set the global logger to our static logger with the `log` crate and set the maximum log level.
 - The `serial_logger` provides a simple, lightweight logging solution that writes directly to the serial port.
 
@@ -351,16 +350,27 @@ In this example, Patina MM configuration definitions come from the `patina_mm` c
 components come from the `q35_services` crate. The `q35_services` crate would reside in a QEMU Q35-specific platform
 repository.
 
-```rust
-// Configure MM Communication
-.with_config(patina_mm::config::MmCommunicationConfiguration {
-    acpi_base: patina_mm::config::AcpiBase::Mmio(0x0), // Set during boot
-    cmd_port: patina_mm::config::MmiPort::Smi(0xB2),
-    data_port: patina_mm::config::MmiPort::Smi(0xB3),
-    comm_buffers: vec![],
-})
-.with_component(q35_services::mm_config_provider::MmConfigurationProvider)
-.with_component(q35_services::mm_control::QemuQ35PlatformMmControl::new())
+```rust,no_run
+# extern crate patina;
+# extern crate patina_dxe_core;
+# extern crate patina_mm;
+# let hob_list = std::ptr::null();
+use patina_dxe_core::Core;
+
+Core::default()
+  .init_memory(hob_list)
+  // Configure MM Communication
+  .with_config(patina_mm::config::MmCommunicationConfiguration {
+      acpi_base: patina_mm::config::AcpiBase::Mmio(0x0), // Set during boot
+      cmd_port: patina_mm::config::MmiPort::Smi(0xB2),
+      data_port: patina_mm::config::MmiPort::Smi(0xB3),
+      comm_buffers: vec![],
+  })
+  .with_component(patina_mm::component::sw_mmi_manager::SwMmiManager::new())
+  // Platform Mm Init hook
+  //.with_component(q35_services::mm_control::QemuQ35PlatformMmControl::new())
+  .start()
+  .unwrap();
 ```
 
 ### 7.2 AArch64 Interrupt Controller (GIC)
@@ -368,9 +378,15 @@ repository.
 For [AArch64 platforms using GIC](https://developer.arm.com/documentation/ihi0069/latest/)
 (Generic Interrupt Controller):
 
-```rust
-// GIC configuration for AArch64
-.with_config(GicBases::new(0x40060000, 0x40080000)) // Update for your platform
+```rust,no_run
+# extern crate patina_dxe_core;
+# let hob_list = std::ptr::null();
+use patina_dxe_core::{GicBases, Core};
+
+Core::default()
+  .init_memory(hob_list)
+  // GIC configuration for AArch64
+  .with_config(GicBases::new(0x40060000, 0x40080000)); // Update for your platform
 ```
 
 ### 7.3 Performance Monitoring (Optional)
@@ -379,18 +395,26 @@ The
 [`patina_performance`](https://github.com/OpenDevicePartnership/patina/tree/main/components/patina_performance)
 component provides detailed UEFI performance measurement capabilities:
 
-```rust
-.with_config(patina_performance::config::PerfConfig {
-    enable_component: true,
-    enabled_measurements: {
-        patina::performance::Measurement::DriverBindingStart
-        | patina::performance::Measurement::DriverBindingStop
-        | patina::performance::Measurement::LoadImage
-        | patina::performance::Measurement::StartImage
-    },
-})
-.with_component(patina_performance::component::performance_config_provider::PerformanceConfigurationProvider)
-.with_component(patina_performance::component::performance::Performance)
+```rust,no_run
+# extern crate patina;
+# extern crate patina_dxe_core;
+# extern crate patina_performance;
+# let hob_list = std::ptr::null();
+use patina_dxe_core::Core;
+
+Core::default()
+  .init_memory(hob_list)
+  .with_config(patina_performance::config::PerfConfig {
+      enable_component: true,
+      enabled_measurements: {
+          patina::performance::Measurement::DriverBindingStart
+          | patina::performance::Measurement::DriverBindingStop
+          | patina::performance::Measurement::LoadImage
+          | patina::performance::Measurement::StartImage
+      },
+  })
+  .with_component(patina_performance::component::performance_config_provider::PerformanceConfigurationProvider)
+  .with_component(patina_performance::component::performance::Performance);
 ```
 
 ## 8. Complete Implementation Example
@@ -401,19 +425,26 @@ Stack traces are produced via the
 crate when supported by the target architecture.
 
 ```rust
-#![cfg(all(target_os = "uefi", feature = "x64"))]
-#![no_std]
-#![no_main]
+// #![no_std] // Commented out for mdbook compilation purposes
+// #![no_main] // Commented out for mdbook compilation purposes
+# extern crate core;
+# extern crate patina_dxe_core;
+# extern crate patina;
+# extern crate patina_stacktrace;
+# extern crate patina_debugger;
+# extern crate patina_ffs_extractors;
+# extern crate log;
+# fn main() {}
 
 use core::{ffi::c_void, panic::PanicInfo};
 use patina_dxe_core::Core;
 use patina_ffs_extractors::BrotliSectionExtractor;
-use patina::log::serial_logger::SerialLogger;
-use patina::serial::uart::Uart16550;
+use patina::log::{Format, SerialLogger};
+use patina::serial::uart::UartNull; // Uart16550 or UartPl011 exist
 use patina_stacktrace::StackTrace;
 extern crate alloc;
 
-#[panic_handler]
+#[cfg_attr(target_os = "uefi", panic_handler)]
 fn panic(info: &PanicInfo) -> ! {
     log::error!("{}", info);
 
@@ -428,8 +459,22 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
-static LOGGER: SerialLogger<Uart16550> = SerialLogger::new(
-    Uart16550::Io { base: 0x402 },
+#[cfg(feature = "enable_debugger")]
+const _ENABLE_DEBUGGER: bool = true;
+#[cfg(not(feature = "enable_debugger"))]
+const _ENABLE_DEBUGGER: bool = false;
+
+#[cfg(feature = "build_debugger")]
+static DEBUGGER: patina_debugger::PatinaDebugger<UartNull> =
+    patina_debugger::PatinaDebugger::new(UartNull {})  // <- Update for your platform
+        .with_force_enable(_ENABLE_DEBUGGER)
+        .with_log_policy(patina_debugger::DebuggerLoggingPolicy::FullLogging);
+
+static LOGGER: SerialLogger<UartNull> = SerialLogger::new(
+    Format::Standard, // Format to write logs in
+    &[], // filters [(target, log_level)]
+    log::LevelFilter::Debug, // filter level
+    UartNull {} // The SerialIO writer
 );
 
 #[cfg_attr(target_os = "uefi", export_name = "efi_main")]
@@ -477,10 +522,13 @@ in platform components. This behavior is recommended for development and product
 For platforms requiring compatibility with legacy software that improperly handles 64-bit addresses, enable 32-bit
 memory preference using the `prioritize_32_bit_memory()` configuration:
 
-```rust
+```rust,no_run
+# extern crate patina_dxe_core;
+# let physical_hob_list = std::ptr::null();
+use patina_dxe_core::Core;
 Core::default()
     .prioritize_32_bit_memory()  // Add this configuration
-    .init_memory(physical_hob_list)
+    .init_memory(physical_hob_list);
     // ... rest of configuration
 ```
 
