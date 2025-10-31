@@ -16,5 +16,5 @@
 //!
 #![cfg_attr(not(feature = "std"), no_std)]
 #![feature(coverage_attribute)]
-
+#![coverage(off)] // Disable all coverage instrumentation for sample code
 pub mod component;
