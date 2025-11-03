@@ -1,0 +1,13 @@
+# @file release-toml-pr.yml
+#
+# A Github workflow to create a pull request that updates the crate version numbers of local crates to the version
+# specified current draft release tag. If a pull request already exists, it will be updated instead.
+
+on:
+  workflow_dispatch:
+    
+jobs:
+  release-toml-pr:
+    name: Create Release Version Update PR
+    uses: .github/workflows/ReleaseTomlPr.yml
+    secrets: inherit
