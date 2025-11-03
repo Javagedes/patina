@@ -33,7 +33,7 @@ jobs:
     secrets: inherit
   mdbook_docs_test:
     name: Run
-    uses: OpenDevicePartnership/patina-devops/.github/workflows/MdbookWorkflow.yml@0.1.0
+    uses: OpenDevicePartnership/patina-devops/.github/workflows/MdbookWorkflow.yml@v0.1.0
     with:
       mdbook-path: "docs"
       build-cmd: cargo make build-lib
