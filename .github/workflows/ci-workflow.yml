@@ -28,7 +28,6 @@ jobs:
     uses: OpenDevicePartnership/patina-devops/.github/workflows/CiWorkflow.yml@v0.1.0
     with:
       build-tasks: "build,build-x64,build-aarch64"
-      mdbook-path: "docs"
       run-cargo-vet: false
       run-release-dry-run: ${{ !contains(github.event.pull_request.body, '- [x] Creates a new crate?') }}
     secrets: inherit
