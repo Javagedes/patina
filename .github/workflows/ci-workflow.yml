@@ -32,3 +32,10 @@ jobs:
       run-cargo-vet: false
       run-release-dry-run: ${{ !contains(github.event.pull_request.body, '- [x] Creates a new crate?') }}
     secrets: inherit
+  mdbook_docs_test:
+    name: Run
+    uses: OpenDevicePartnership/patina-devops/.github/workflows/MdbookWorkflow.yml@personal/joeyvagedes/mdbook
+    with:
+      mdbook-path: "docs"
+      build-cmd: cargo make build-lib
+    secrets: inherit
