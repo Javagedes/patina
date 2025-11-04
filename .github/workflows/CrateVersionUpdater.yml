@@ -8,12 +8,6 @@
 # SPDX-License-Identifier: Apache-2.0
 ##
 on:
-  # This trigger is to update an existing release PR (if it exists) when the release draft is updated.
-  # It will NOT create a new PR if one does not already exist.
-  workflow_run:
-    workflows: ["Update Release Draft"]
-    types: ["completed"]
-
   workflow_call:
     inputs:
       ignore-prefix:
@@ -21,6 +15,11 @@ on:
         required: false
         default: ''
         type: string
+      create-pr:
+        description: 'Whether to create a new PR if one does not already exist.'
+        required: false
+        default: 'true'
+        type: boolean
 
 jobs:
   run:
@@ -125,8 +124,9 @@ jobs:
                 pull_number: existingPr.number,
                 title: prTitle
                 });
-            } else if (context.eventName === "workflow_call") {
+            } else if ( ${{ inputs.create-pr }} ) {
               // Create a new pull request
+              console.log("No existing pull request found. Creating a new one");
               const { data: pullRequest } = await github.rest.pulls.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
