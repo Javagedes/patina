@@ -2,7 +2,7 @@
 #
 # Defines the configuration used for drafting new releases
 #
-# IMPORTANT: Only use labels defined in the .github/Labels.yml file in this repo.
+# IMPORTANT: Only23434 use labels defined in the .github/Labels.yml file in this repo.
 #
 # NOTE: `semver:major`, `semver:minor`, and `semver:patch` can be used to force that
 #       version to roll regardless of other labels.
