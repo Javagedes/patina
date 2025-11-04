@@ -2,7 +2,7 @@
 #
 # A Github workflow that compiles an mdbook located at docs/* and publishes it
 # to the repository's githubpages page.
-#
+#asdf
 ##
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: Apache-2.0
