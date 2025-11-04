@@ -10,13 +10,14 @@
 name: Publish Release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [ main ]
+    paths: [ Cargo.toml ]
 
 jobs:
   release:
     name: Release
-    uses: OpenDevicePartnership/patina-devops/.github/workflows/ReleaseWorkflow.yml@v0.1.1
+    uses: ./.github/workflows/ReleaseWorkflow.yml
     with:
       ignore-prefix: 'patina-v'
     secrets: inherit
