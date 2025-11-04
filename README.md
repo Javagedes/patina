@@ -65,12 +65,12 @@ Below is the information required to perform a release that publishes to crates.
    1. If something is incorrect, update it in the draft release
    2. If you need to manually change the version, make sure you update the associated git tag value in the draft release
 2. Run the [Create Crate Version Update PR](https://github.com/OpenDevicePartnership/patina/actions/workflows/crate-version-update.yml)
-   action to generate a pull request that updates the repository crate version to the current release draft version.
+   workflow to generate a pull request that updates the repository crate version to the current release draft version.
 3. Review, approve, and merge the pull request. Should others request additional pull requests be merged before the
-   release is finalized, simply complete their pull request with the change. Any changes to the release draft and pull
-   request created in step 2 will be automatically updated.
+   release is finalized, simply complete their pull requests first. Any changes to the release draft and pull request
+   created in step 2 will be automatically updated.
 4. Upon completion of the pull request created in step 2, the [Publish Release](https://github.com/OpenDevicePartnership/patina/actions/workflows/publish-release.yml)
-   will automatically publish the github release and all crates in the repository to crates.io.
+   workflow will automatically publish the github release and all crates in the repository to crates.io.
 
 ## First-Time Tool Setup Instructions
 
