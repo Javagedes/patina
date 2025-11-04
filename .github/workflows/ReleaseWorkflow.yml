@@ -1,0 +1,148 @@
+# @file ReleaseWorkflow.yml
+#
+# A Github workflow that creates or updates a pull request to update the crate version numbers of local crates to match
+# the version specified in the current draft release tag.
+#
+##
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+##
+name: Publish
+
+on:
+  workflow_call:
+    inputs:
+      ignore-prefix:
+        description: 'The prefix to ignore in the release tag (e.g., "patina-v").'
+        required: false
+        default: ''
+        type: string
+    secrets:
+      PATINA_CRATES_IO_TOKEN:
+        description: 'The token to use for authenticating with crates.io.'
+        required: true
+
+jobs:
+  check-default-branch:
+    name: Validate on main
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      is-default-branch: ${{ steps.check.outputs.is-default-branch }}
+    
+    steps:
+      - name: Check if on default branch
+        id: check
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/${{ github.event.repository.default_branch }}" ]; then
+            echo "is-default-branch=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-default-branch=false" >> $GITHUB_OUTPUT
+          fi
+ 
+  run:
+    name: Publish
+
+    runs-on: ubuntu-latest
+
+    needs: check-default-branch
+
+    if: ${{ needs.check-default-branch.outputs.is-default-branch == 'true' }}
+
+    steps:
+      - name: ✅ Checkout Repository ✅
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 🛠️ Download Rust Tools 🛠️
+        uses: OpenDevicePartnership/patina-devops/.github/actions/rust-tool-cache@main
+
+      - name: Generate Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PATINA_AUTOMATION_APPLICATION_ID }}
+          private-key: ${{ secrets.PATINA_AUTOMATION_APPLICATION_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Get Release Tag
+        id: release_tag
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const prefix = `${{ inputs.ignore-prefix }}`;
+
+            const { data: releases } = await github.rest.repos.listReleases({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+
+            const draft = releases.find(r => r.draft);
+            if (!draft) {
+              core.setFailed("No draft release found.");
+              return;
+            }
+
+            let tag = draft.tag_name;
+            if (prefix && tag.startsWith(prefix)) {
+              tag = tag.slice(prefix.length);
+            }
+
+            const draftId = draft.id;
+
+            core.info(`Release Tag: ${tag}, Draft ID: ${draftId}`);
+            core.setOutput("tag", tag);
+            core.setOutput("draft_id", draftId);
+
+      - name: Validate Version Updated in Commits
+        id: validate-version-updated
+        run: |
+          newVersion=${{ steps.release_tag.outputs.tag }}
+          before=${{ github.event.before }}
+          after=${{ github.event.after }}
+
+          # Git the diff between the two commits, filter to only the added lines, and make sure one of the lines
+          # contains the main version being updated to the version specified in the release tag.
+          if git diff $before..$after -- Cargo.toml | grep '^+[^+]' | grep -q "version = \"$newVersion\""; then
+            echo "Found version $newVersion in the diff"
+            echo "version-updated=true" >> $GITHUB_OUTPUT
+          else
+            echo "Version $newVersion not found in the diff"
+            echo "version-updated=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Everything below here only runs if the version was actually updated in this merge commit.
+      - name: Login to Registry
+        if: steps.validate-version-updated.outputs.version-updated == 'true'
+        run: cargo login "${{ secrets.PATINA_CRATES_IO_TOKEN }}"
+
+      - name: Publish to crates.io (Dry-Run)
+        if: steps.validate-version-updated.outputs.version-updated == 'true'
+        run: |
+          cargo release ${{ steps.release_tag.outputs.tag }} --no-tag --no-push --workspace 
+
+      - name: Create Github Release
+        if: steps.validate-version-updated.outputs.version-updated == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const tag = "${{ steps.release_tag.outputs.tag }}";
+            const draftId = "${{ steps.release_tag.outputs.draft_id }}";
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: draftId,
+              draft: false
+            });
+
+            core.info(`Published release ${tag}`);
+
+      - name: Publish to crates.io
+        if: steps.validate-version-updated.outputs.version-updated == 'true'
+        run: |
+          cargo release ${{ steps.release_tag.outputs.tag }} --x --no-tag --no-push --workspace
