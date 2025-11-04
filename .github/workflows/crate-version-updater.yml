@@ -1,0 +1,30 @@
+# @file crate-version-updater
+#
+# A Github workflow that creates or updates a pull request to update the crate version numbers of local crates to match
+# the version specified in the current draft release tag.
+#
+##
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+##
+name: Create Crate Version Update PR
+
+on:
+  workflow_run:
+    workflows: ["Update Release Draft"]
+    types: ["completed"]
+
+  workflow_dispatch:
+
+jobs:
+  crate-version-update-pr:
+    name: Run
+    uses: ./.github/workflows/CrateVersionUpdater.yml
+    with:
+      ignore-prefix: 'patina-v'
+      create-pr: ${{ github.event_name == 'workflow_dispatch' }}
+    secrets: inherit
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: write
