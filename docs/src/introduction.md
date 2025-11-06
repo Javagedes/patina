@@ -26,7 +26,7 @@ the project's goals and design philosophy. You can also watch an overview of
 
 ## Patina In Action
 
-If you want to see patina being actively used and "in action", then check out these two repositories:
+If you want to see Patina being actively used and "in action", then check out these two repositories:
 
 **1. [patina-qemu](https://github.com/OpenDevicePartnership/patina-qemu/):** This repository has two virtual
   platforms, both of which use the patina-dxe-core. You can find setup instructions for building and running them
