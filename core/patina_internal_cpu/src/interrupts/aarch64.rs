@@ -11,19 +11,12 @@ use crate::log_registers;
 use patina::{error::EfiError, pi::protocols::cpu_arch::EfiSystemContext};
 use patina_stacktrace::{StackFrame, StackTrace};
 
-cfg_if::cfg_if! {
-    if #[cfg(all(target_os = "uefi", target_arch = "aarch64"))] {
-        #[coverage(off)]
-        mod interrupt_manager;
-        pub mod gic_manager;
-        pub use interrupt_manager::InterruptsAarch64;
-        use patina::{read_sysreg, write_sysreg};
-    } else if #[cfg(feature = "doc")] {
-        pub use interrupt_manager::InterruptsAarch64;
-        #[coverage(off)]
-        mod interrupt_manager;
-    }
-}
+pub mod gic_manager;
+mod interrupt_manager;
+use patina::{read_sysreg, write_sysreg};
+
+#[cfg(not(test))]
+pub use interrupt_manager::InterruptsAarch64;
 
 pub type ExceptionContextAArch64 = r_efi::protocols::debug_support::SystemContextAArch64;
 

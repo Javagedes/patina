@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_uefi_routine() {
-        let mut context = crate::interrupts::null::ExceptionContextNull {};
+        let mut context = ExceptionContext(crate::interrupts::stub::ExceptionContextStub {});
         register_exception_handler(NUM_EXCEPTION_TYPES, HandlerType::UefiRoutine(test_callback))
             .expect_err("Allowed invalid exception number!");
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn test_handler() {
-        let mut context = crate::interrupts::null::ExceptionContextNull {};
+        let mut context = ExceptionContext(crate::interrupts::stub::ExceptionContextStub {});
         let handler = Box::leak(Box::new(TestHandler { invoked: AtomicBool::new(false) }));
 
         register_exception_handler(NUM_EXCEPTION_TYPES, HandlerType::Handler(handler))
