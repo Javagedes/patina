@@ -111,6 +111,13 @@ macro_rules! error {
     }};
 }
 
+const SBOM: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/",
+    env!("CARGO_PKG_NAME"),
+    "_sbom.xml.deflate",
+));
+
 pub(crate) static GCD: SpinLockedGcd = SpinLockedGcd::new(Some(events::gcd_map_change));
 
 /// A configuration struct containing the GIC bases (gic_d, gic_r) for AARCH64 systems.

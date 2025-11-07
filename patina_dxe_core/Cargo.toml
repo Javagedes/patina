@@ -41,6 +41,12 @@ patina_internal_device_path = { workspace = true }
 patina_internal_depex = { workspace = true}
 patina_performance = { workspace = true }
 
+[build-dependencies]
+miniz_oxide = { version = "0.8.9" }
+cargo-cyclonedx = { workspace = true }
+cargo_metadata = { workspace = true }
+cyclonedx-bom = "0.8.0"
+
 [dev-dependencies]
 # To avoid circular dependencies, cargo-release skips dev dependencies when evaluating the release order for
 # cargo-release, however they are still used when verifying the package is compileable. Any dev-dependency that is

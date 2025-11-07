@@ -72,6 +72,11 @@ serde_yaml = { version = "0.9" }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 lzma-rs = { version = "0.3" }
 
+# sbom
+miniz_oxide = { version = "0.8.9", default-features = false }
+cargo-cyclonedx = "0.5.7"
+cargo_metadata = "0.18.1"
+
 [profile.release]
 debug = true
 

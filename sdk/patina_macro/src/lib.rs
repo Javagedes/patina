@@ -12,6 +12,7 @@
 mod component_macro;
 mod hob_macro;
 mod service_macro;
+mod sbom;
 mod smbios_record_macro;
 mod test_macro;
 
@@ -258,4 +259,9 @@ pub fn patina_test(_: proc_macro::TokenStream, item: proc_macro::TokenStream) ->
 #[proc_macro_derive(SmbiosRecord, attributes(smbios, string_pool))]
 pub fn smbios_record(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     smbios_record_macro::smbios_record_derive(item.into()).into()
+}
+
+#[proc_macro_attribute]
+pub fn sbom(_: proc_macro::TokenStream, item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    sbom::sbom2(item.into()).into()
 }
