@@ -26,6 +26,9 @@ fn main() {
         })
         .collect::<Vec<_>>();
 
+    let dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set");
+    println!("cargo:warning=manifest_dir={}", dir);
+
     let metadata = cargo_metadata::MetadataCommand::new()
         .features(cargo_metadata::CargoOpt::SomeFeatures(features.clone()))
         .exec()
@@ -59,6 +62,7 @@ fn main() {
     ).unwrap();
 
     let sboms = sboms.into_iter().filter_map(|sbom| {
+        println!("cargo:warning=Processing SBOM for package: {}", sbom.package_name);
         const CORE_NAME: &[u8] = b"patina_dxe_core";
         const CORE_NAME_LEN: usize = CORE_NAME.len();
 

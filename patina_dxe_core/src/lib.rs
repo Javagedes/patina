@@ -536,6 +536,10 @@ impl Core<Alloc> {
 
     /// Starts the core, dispatching all drivers.
     pub fn start(mut self) -> Result<()> {
+        let data = miniz_oxide::inflate::decompress_to_vec(&SBOM).unwrap();
+        let sbom_str = core::str::from_utf8(&data).unwrap();
+        log::info!("DXE Core SBOM:\n{}", sbom_str);
+
         log::info!("Registering default components");
         self.add_core_components();
         log::info!("Finished.");
