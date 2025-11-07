@@ -31,6 +31,7 @@ If you want to see Patina being actively used and "in action", then check out th
 **1. [patina-qemu](https://github.com/OpenDevicePartnership/patina-qemu/):** This repository has two virtual
   platforms, both of which use the patina-dxe-core. You can find setup instructions for building and running them
   locally in that repository's readme.
+
 **2. [patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu):** This repository contains
   the patina-dxe-core binary crates used by the two virtual platforms in `patina-qemu`. If you'd like to experiment,
   you can clone this repo, modify the DXE core, and use the override feature in `patina-qemu` to boot with your
