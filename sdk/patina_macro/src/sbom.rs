@@ -6,6 +6,10 @@ fn strip_colon(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
 
 pub fn sbom2(item: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
     let s = strip_colon(item);
+    
+    // std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    println!("{}", std::env::var("CARGO_MANIFEST_DIR").unwrap());
+
     let metadata = cargo_metadata::MetadataCommand::new()
         .exec()
         .unwrap();

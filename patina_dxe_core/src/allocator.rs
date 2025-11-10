@@ -19,7 +19,7 @@ use core::{
     mem,
     ops::Range,
     ptr::NonNull,
-    slice::{self, from_raw_parts_mut},
+    slice::{self, from_raw_parts_mut}, sync::atomic::AtomicPtr,
 };
 
 extern crate alloc;
@@ -27,13 +27,7 @@ use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use mu_rust_helpers::function;
 
 use crate::{
-    GCD, config_tables,
-    gcd::{self, AllocateType as AllocationStrategy},
-    memory_attributes_table::MemoryAttributesTable,
-    protocol_db::{self, INVALID_HANDLE},
-    protocols::PROTOCOL_DB,
-    systemtables::EfiSystemTable,
-    tpl_lock,
+    Core, GCD, SELF, config_tables, gcd::{self, AllocateType as AllocationStrategy}, memory_attributes_table::MemoryAttributesTable, protocol_db::{self, INVALID_HANDLE}, protocols::PROTOCOL_DB, systemtables::EfiSystemTable, tpl_lock
 };
 use patina::pi::{
     dxe_services::{self, GcdMemoryType, MemorySpaceDescriptor},
@@ -1146,6 +1140,31 @@ pub fn init_memory_support(hob_list: &HobList) {
                 }
             }
         }
+    }
+}
+
+impl Core<crate::Alloc> {
+
+    fn instance<'a>() -> &'a Self {
+        unsafe { NonNull::new(SELF.load(core::sync::atomic::Ordering::Relaxed)).unwrap().cast::<Self>().as_ref() }
+    }
+
+    extern "efiapi" fn allocate_pages(
+        allocation_type: efi::AllocateType,
+        memory_type: efi::MemoryType,
+        pages: usize,
+        memory: *mut efi::PhysicalAddress,
+    ) -> efi::Status {
+        Self::instance().print();
+        match core_allocate_pages(allocation_type, memory_type, pages, memory, None) {
+            Ok(_) => efi::Status::SUCCESS,
+            Err(status) => status.into(),
+        }
+    }
+
+    fn install_memory_services(bs: &mut efi::BootServices) {
+        
+        
     }
 }
 

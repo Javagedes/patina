@@ -65,7 +65,7 @@ mod tpl_lock;
 #[coverage(off)]
 pub mod test_support;
 
-use core::{ffi::c_void, ptr, str::FromStr};
+use core::{ffi::c_void, ptr::{self, NonNull}, str::FromStr, sync::atomic::AtomicPtr};
 
 use alloc::{boxed::Box, vec::Vec};
 use gcd::SpinLockedGcd;
@@ -111,14 +111,18 @@ macro_rules! error {
     }};
 }
 
-const SBOM: &[u8] = include_bytes!(concat!(
-    env!("OUT_DIR"),
-    "/",
-    env!("CARGO_PKG_NAME"),
-    "_sbom.xml.deflate",
-));
+#[patina_macro::sbom]
+const SBOM: &[u8];
+// const SBOM: &[u8] = include_bytes!(concat!(
+//     env!("OUT_DIR"),
+//     "/",
+//     env!("CARGO_PKG_NAME"),
+//     "_sbom.xml.deflate",
+// ));
 
 pub(crate) static GCD: SpinLockedGcd = SpinLockedGcd::new(Some(events::gcd_map_change));
+
+pub(crate) static SELF: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
 
 /// A configuration struct containing the GIC bases (gic_d, gic_r) for AARCH64 systems.
 ///
@@ -313,6 +317,10 @@ impl Core<NoAlloc> {
 }
 
 impl Core<Alloc> {
+    pub fn print(&self) {
+        log::info!("HELLO");
+    }
+
     /// Directly registers an instantiated service with the core, making it available immediately.
     #[inline(always)]
     pub fn with_service(mut self, service: impl IntoService + 'static) -> Self {
@@ -536,9 +544,10 @@ impl Core<Alloc> {
 
     /// Starts the core, dispatching all drivers.
     pub fn start(mut self) -> Result<()> {
-        let data = miniz_oxide::inflate::decompress_to_vec(&SBOM).unwrap();
-        let sbom_str = core::str::from_utf8(&data).unwrap();
-        log::info!("DXE Core SBOM:\n{}", sbom_str);
+        SELF.store(&self as *const _ as *mut u8, core::sync::atomic::Ordering::SeqCst);
+        // let data = miniz_oxide::inflate::decompress_to_vec(&SBOM).unwrap();
+        // let sbom_str = core::str::from_utf8(&data).unwrap();
+        // log::info!("DXE Core SBOM:\n{}", sbom_str);
 
         log::info!("Registering default components");
         self.add_core_components();

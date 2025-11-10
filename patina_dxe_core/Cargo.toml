@@ -41,6 +41,7 @@ patina_internal_device_path = { workspace = true }
 patina_internal_depex = { workspace = true}
 patina_performance = { workspace = true }
 miniz_oxide = { version = "0.8.0", default-features = false, features = ["with-alloc"] }
+patina_macro = { workspace = true }
 
 [build-dependencies]
 miniz_oxide = { version = "0.8.9" }

@@ -58,6 +58,7 @@ pub enum EfiMemoryType {
     OsMemoryType(CustomMemoryType),
 }
 
+
 /// Wrapper for custom memory types to prevent manual creation of non-compliant
 /// memory types.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
