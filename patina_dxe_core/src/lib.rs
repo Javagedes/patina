@@ -65,7 +65,7 @@ mod tpl_lock;
 #[coverage(off)]
 pub mod test_support;
 
-use core::{ffi::c_void, ptr, str::FromStr};
+use core::{ffi::c_void, marker::PhantomData, ptr::{self, NonNull}, str::FromStr, sync::atomic::AtomicPtr};
 
 use alloc::{boxed::Box, vec::Vec};
 use gcd::SpinLockedGcd;
@@ -144,13 +144,27 @@ impl Default for GicBases {
     }
 }
 
-#[doc(hidden)]
-/// A zero-sized type to gate allocation functions in the [Core].
-pub struct Alloc;
+static __SELF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
-#[doc(hidden)]
-/// A zero-sized type to gate non-allocation functions in the [Core].
-pub struct NoAlloc;
+pub trait Platform {
+    /// Informs the core that it should prioritize allocating 32-bit memory when
+    /// not otherwise specified.
+    ///
+    /// This should only be used as a workaround in environments where address width
+    /// bugs exist in uncontrollable dependent software. For example, when booting
+    /// to an OS that puts any addresses from UEFI into a uint32.
+    const PRIORITIZE_32_BIT_MEMORY: bool = false;
+}
+
+struct UefiState {
+
+}
+
+impl UefiState {
+    const fn new() -> Self {
+        Self { }
+    }
+}
 
 /// The initialize phase DxeCore, responsible for setting up the environment with the given configuration.
 ///
@@ -195,30 +209,60 @@ pub struct NoAlloc;
 ///   .start()
 ///   .unwrap();
 /// ```
-pub struct Core<MemoryState> {
+pub struct Core<P: Platform> {
     physical_hob_list: *const c_void,
     hob_list: HobList<'static>,
     components: Vec<Box<dyn Component>>,
     storage: Storage,
-    _memory_state: core::marker::PhantomData<MemoryState>,
+    uefi_state: UefiState,
+    _memory_state: PhantomData<P>,
 }
 
-impl Default for Core<NoAlloc> {
+impl <P: Platform> Default for Core<P> {
     fn default() -> Self {
-        Core {
-            physical_hob_list: core::ptr::null(),
-            hob_list: HobList::default(),
-            components: Vec::new(),
-            storage: Storage::new(),
-            _memory_state: core::marker::PhantomData,
-        }
+        Core::new()
     }
 }
 
-impl Core<NoAlloc> {
+impl <P: Platform> Core<P> {
+    /// Creates a new instance of the Core.
+    pub const fn new() -> Self {
+        Self {
+            physical_hob_list: ptr::null(),
+            hob_list: HobList::new(),
+            components: Vec::new(),
+            storage: Storage::new(),
+            uefi_state: UefiState::new(),
+            _memory_state: core::marker::PhantomData,
+        }
+    }
+
+    /// Sets the singleton instance of the Core.
+    fn set_instance(&'static self) {
+        let ptr = NonNull::from(self).cast::<u8>().as_ptr();
+        __SELF.store(ptr, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Returns the singleton instance of the Core for use in efiapi functions.
+    /// 
+    /// This function is only used internally for providing static access to the Core instance
+    /// inside of `efiapi` function.
+    pub(crate) fn instance<'a>() -> &'a Self {
+        let ptr = __SELF.load(core::sync::atomic::Ordering::SeqCst);
+        // SAFETY: The only way to set __SELF is through the `set_instance` method, which ensures
+        // the type is correct between setting and getting static state.
+        unsafe {
+            NonNull::new(ptr).expect("Core instance should already be initialized.")
+                .cast::<Self>()
+                .as_ref()
+        }
+    }
+
     /// Initializes the core with the given configuration, including GCD initialization, enabling allocations.
-    pub fn init_memory(mut self, physical_hob_list: *const c_void) -> Core<Alloc> {
+    pub fn init_memory(&'static mut self, physical_hob_list: *const c_void) {
         log::info!("DXE Core Crate v{}", env!("CARGO_PKG_VERSION"));
+
+        GCD.prioritize_32_bit_memory(P::PRIORITIZE_32_BIT_MEMORY);
 
         let mut cpu = EfiCpu::default();
         cpu.initialize().expect("Failed to initialize CPU!");
@@ -232,9 +276,11 @@ impl Core<NoAlloc> {
             panic!("HOB list pointer is null!");
         }
 
+        self.physical_hob_list = physical_hob_list;
+
         gcd::init_gcd(physical_hob_list);
 
-        log::trace!("Initial GCD:\n{GCD}");
+        log::trace!("Initial GCD:\n{}", GCD);
 
         // After this point Rust Heap usage is permitted (since GCD is initialized with a single known-free region).
         // Relocate the hobs from the input list pointer into a Vec.
@@ -255,67 +301,31 @@ impl Core<NoAlloc> {
         // Add custom monitor commands to the debugger before initializing so that
         // they are available in the initial breakpoint.
         patina_debugger::add_monitor_command("gcd", "Prints the GCD", |_, out| {
-            let _ = write!(out, "GCD -\n{GCD}");
+            let _ = write!(out, "GCD -\n{}", GCD);
         });
 
         // Initialize the debugger if it is enabled.
         patina_debugger::initialize(&mut interrupt_manager);
 
-        log::info!("GCD - After memory init:\n{GCD}");
+        log::info!("GCD - After memory init:\n{}", GCD);
 
         self.storage.add_service(cpu);
         self.storage.add_service(interrupt_manager);
         self.storage.add_service(CoreMemoryManager);
 
-        Core {
-            physical_hob_list,
-            hob_list: self.hob_list,
-            components: self.components,
-            storage: self.storage,
-            _memory_state: core::marker::PhantomData,
-        }
+        self.set_instance();
     }
 
-    /// Informs the core that it should prioritize allocating 32-bit memory when
-    /// not otherwise specified.
-    ///
-    /// This should only be used as a workaround in environments where address width
-    /// bugs exist in uncontrollable dependent software. For example, when booting
-    /// to an OS that puts any addresses from UEFI into a uint32.
-    ///
-    /// Must be called prior to [`Core::init_memory`].
-    ///
-    /// ## Example
-    ///
-    /// ``` rust,no_run
-    /// # use patina::component::prelude::*;
-    /// # fn example_component() -> patina::error::Result<()> { Ok(()) }
-    /// # let physical_hob_list = core::ptr::null();
-    /// patina_dxe_core::Core::default()
-    ///   .prioritize_32_bit_memory()
-    ///   .init_memory(physical_hob_list)
-    ///   .start()
-    ///   .unwrap();
-    /// ```
-    pub fn prioritize_32_bit_memory(self) -> Self {
-        // This doesn't actually alter the core's state, but uses the same model
-        // for consistent abstraction.
-        GCD.prioritize_32_bit_memory(true);
-        self
-    }
-}
-
-impl Core<Alloc> {
     /// Directly registers an instantiated service with the core, making it available immediately.
     #[inline(always)]
-    pub fn with_service(mut self, service: impl IntoService + 'static) -> Self {
+    pub fn with_service(&'static mut self, service: impl IntoService + 'static) -> &'static mut Self {
         self.storage.add_service(service);
         self
     }
 
     /// Registers a component with the core, that will be dispatched during the driver execution phase.
     #[inline(always)]
-    pub fn with_component<I>(mut self, component: impl IntoComponent<I>) -> Self {
+    pub fn with_component<I>(&'static mut self, component: impl IntoComponent<I>) -> &'static mut Self {
         self.insert_component(self.components.len(), component.into_component());
         self
     }
@@ -328,7 +338,7 @@ impl Core<Alloc> {
 
     /// Adds a configuration value to the Core's storage. All configuration is locked by default. If a component is
     /// present that requires a mutable configuration, it will automatically be unlocked.
-    pub fn with_config<C: Default + 'static>(mut self, config: C) -> Self {
+    pub fn with_config<C: Default + 'static>(&'static mut self, config: C) -> &'static mut Self {
         self.storage.add_config(config);
         self
     }
