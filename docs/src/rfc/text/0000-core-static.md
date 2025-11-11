@@ -245,6 +245,8 @@ A short and sweet example of how we will implement efiapi functions across the w
 
 ```rust
 impl <P: Platform> Core {
+    /// This method is public to the entire crate. Anywhere else in the codebase can call this method, so long as it
+    /// has a reference to `Core`.
     pub(crate) fn trust(handle: efi::Handle, file: &efi::Guid) -> Result<(), EfiError> {
         let dispatcher = self.uefi_state.dispatcher_context.lock();
         for driver in dispatcher.pending_drivers.iter_mut() {
@@ -256,6 +258,8 @@ impl <P: Platform> Core {
         Err(EfiError::NotFound)
     }
 
+    /// This method is only public to the module, but should never be called. It's purpose is only to be registered
+    /// with the system table and called outside of the rust context
     extern "efiapi" fn trust_efiapi(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
         if file_name.is_null() {
             return efi::Status::INVALID_PARAMETER;
@@ -269,6 +273,7 @@ impl <P: Platform> Core {
         }
     }
 
+    /// Public to the crate, but should only be called once during Core setup.
     fn init_dxe_services(system_table: &mut EfiSystemTable) {
         ...
         trust: Self::trust_efiapi,
@@ -286,11 +291,12 @@ example:
 struct Platform;
 
 impl patina::Platform for Platform {
-    const PRIORITIZE_32_BIT_MEMORY: bool = false;
 
     type Extractor: SectionExtractor = CompositeSectionExtractor;
 
-    fn section_extractor -> Self::Extractor { CompositeSectionExtractor::default() }
+    fn prioritize_32_bit_memory() -> bool { false }
+
+    fn section_extractor() -> Self::Extractor { CompositeSectionExtractor::default() }
 
     fn components(add: &mut Add<Component>) {
         add.add_component(...);
