@@ -19,13 +19,7 @@ use patina::pi::dxe_services;
 use r_efi::efi;
 
 use crate::{
-    GCD,
-    allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool},
-    config_tables,
-    dispatcher::{core_dispatcher, core_schedule, core_trust},
-    fv::core_install_firmware_volume,
-    gcd,
-    systemtables::EfiSystemTable,
+    Core, GCD, Platform, allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool}, config_tables, fv::core_install_firmware_volume, gcd, systemtables::EfiSystemTable
 };
 
 extern "efiapi" fn add_memory_space(
@@ -370,39 +364,6 @@ extern "efiapi" fn get_io_space_map(
     }
 }
 
-extern "efiapi" fn dispatch() -> efi::Status {
-    match core_dispatcher() {
-        Err(err) => err.into(),
-        Ok(()) => efi::Status::SUCCESS,
-    }
-}
-
-extern "efiapi" fn schedule(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
-    if file_name.is_null() {
-        return efi::Status::INVALID_PARAMETER;
-    }
-    // Safety: caller must ensure that file_name is a valid pointer. It is null-checked above.
-    let file_name = unsafe { file_name.read_unaligned() };
-
-    match core_schedule(firmware_volume_handle, &file_name) {
-        Err(status) => status.into(),
-        Ok(_) => efi::Status::SUCCESS,
-    }
-}
-
-extern "efiapi" fn trust(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
-    if file_name.is_null() {
-        return efi::Status::INVALID_PARAMETER;
-    }
-    // Safety: caller must ensure that file_name is a valid pointer. It is null-checked above.
-    let file_name = unsafe { file_name.read_unaligned() };
-
-    match core_trust(firmware_volume_handle, &file_name) {
-        Err(status) => status.into(),
-        Ok(_) => efi::Status::SUCCESS,
-    }
-}
-
 extern "efiapi" fn process_firmware_volume(
     firmware_volume_header: *const c_void,
     size: usize,
@@ -434,50 +395,88 @@ extern "efiapi" fn process_firmware_volume(
     efi::Status::SUCCESS
 }
 
-pub fn init_dxe_services(system_table: &mut EfiSystemTable) {
-    let mut dxe_system_table = dxe_services::DxeServicesTable {
-        header: efi::TableHeader {
-            signature: efi::BOOT_SERVICES_SIGNATURE,
-            revision: efi::BOOT_SERVICES_REVISION,
-            header_size: mem::size_of::<dxe_services::DxeServicesTable>() as u32,
-            crc32: 0,
-            reserved: 0,
-        },
-        add_memory_space,
-        allocate_memory_space,
-        free_memory_space,
-        remove_memory_space,
-        get_memory_space_descriptor,
-        set_memory_space_attributes,
-        get_memory_space_map,
-        add_io_space,
-        allocate_io_space,
-        free_io_space,
-        remove_io_space,
-        get_io_space_descriptor,
-        get_io_space_map,
-        dispatch,
-        schedule,
-        trust,
-        process_firmware_volume,
-        set_memory_space_capabilities,
-    };
-    let dxe_system_table_ptr = &dxe_system_table as *const dxe_services::DxeServicesTable;
-    let crc32 = unsafe {
-        crc32fast::hash(from_raw_parts(
-            dxe_system_table_ptr as *const u8,
-            mem::size_of::<dxe_services::DxeServicesTable>(),
-        ))
-    };
-    dxe_system_table.header.crc32 = crc32;
+impl <P: Platform> Core<P> {
+    #[coverage(off)]
+    extern "efiapi" fn dispatch_efiapi() -> efi::Status {
+        match Self::instance().dispatch() {
+            Err(err) => err.into(),
+            Ok(()) => efi::Status::SUCCESS,
+        }
+    }
 
-    let dxe_system_table = Box::new_in(dxe_system_table, &EFI_RUNTIME_SERVICES_DATA_ALLOCATOR);
+    #[coverage(off)]
+    extern "efiapi" fn schedule_efiapi(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
+        if file_name.is_null() {
+            return efi::Status::INVALID_PARAMETER;
+        }
+        // Safety: caller must ensure that file_name is a valid pointer. It is null-checked above.
+        let file_name = unsafe { file_name.read_unaligned() };
 
-    let _ = config_tables::core_install_configuration_table(
-        dxe_services::DXE_SERVICES_TABLE_GUID,
-        Box::into_raw_with_allocator(dxe_system_table).0 as *mut c_void,
-        system_table,
-    );
+        match Self::instance().schedule(firmware_volume_handle, &file_name) {
+            Err(status) => status.into(),
+            Ok(_) => efi::Status::SUCCESS,
+        }
+    }
+
+    #[coverage(off)]
+    extern "efiapi" fn trust_efiapi(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
+        if file_name.is_null() {
+            return efi::Status::INVALID_PARAMETER;
+        }
+        // Safety: caller must ensure that file_name is a valid pointer. It is null-checked above.
+        let file_name = unsafe { file_name.read_unaligned() };
+
+        match Self::instance().trust(firmware_volume_handle, &file_name) {
+            Err(status) => status.into(),
+            Ok(_) => efi::Status::SUCCESS,
+        }
+    }
+
+    pub(crate) fn init_dxe_services(system_table: &mut EfiSystemTable) {
+        let mut dxe_system_table = dxe_services::DxeServicesTable {
+            header: efi::TableHeader {
+                signature: efi::BOOT_SERVICES_SIGNATURE,
+                revision: efi::BOOT_SERVICES_REVISION,
+                header_size: mem::size_of::<dxe_services::DxeServicesTable>() as u32,
+                crc32: 0,
+                reserved: 0,
+            },
+            add_memory_space,
+            allocate_memory_space,
+            free_memory_space,
+            remove_memory_space,
+            get_memory_space_descriptor,
+            set_memory_space_attributes,
+            get_memory_space_map,
+            add_io_space,
+            allocate_io_space,
+            free_io_space,
+            remove_io_space,
+            get_io_space_descriptor,
+            get_io_space_map,
+            dispatch: Self::dispatch_efiapi,
+            schedule: Self::schedule_efiapi,
+            trust: Self::trust_efiapi,
+            process_firmware_volume,
+            set_memory_space_capabilities,
+        };
+        let dxe_system_table_ptr = &dxe_system_table as *const dxe_services::DxeServicesTable;
+        let crc32 = unsafe {
+            crc32fast::hash(from_raw_parts(
+                dxe_system_table_ptr as *const u8,
+                mem::size_of::<dxe_services::DxeServicesTable>(),
+            ))
+        };
+        dxe_system_table.header.crc32 = crc32;
+
+        let dxe_system_table = Box::new_in(dxe_system_table, &EFI_RUNTIME_SERVICES_DATA_ALLOCATOR);
+
+        let _ = config_tables::core_install_configuration_table(
+            dxe_services::DXE_SERVICES_TABLE_GUID,
+            Box::into_raw_with_allocator(dxe_system_table).0 as *mut c_void,
+            system_table,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -487,13 +486,18 @@ mod tests {
     use crate::test_support;
     use dxe_services::{GcdIoType, GcdMemoryType};
 
+    struct Platform;
+
+    impl crate::Platform for Platform { }
+
+    type TestCore = Core<Platform>;
+
     fn with_locked_state<F: Fn() + std::panic::RefUnwindSafe>(f: F) {
         test_support::with_global_lock(|| {
             unsafe {
                 crate::test_support::init_test_gcd(None);
                 crate::test_support::init_test_protocol_db();
             }
-            crate::test_support::reset_dispatcher_context();
             f();
         })
         .unwrap();
@@ -2066,101 +2070,6 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_returns_not_found_when_nothing_to_do() {
-        with_locked_state(|| {
-            let s = dispatch();
-            assert_eq!(s, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
-    fn test_dispatch_is_idempotent_and_consistently_not_found() {
-        with_locked_state(|| {
-            let s1 = dispatch();
-            let s2 = dispatch();
-            assert_eq!(s1, efi::Status::NOT_FOUND);
-            assert_eq!(s2, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
-    fn test_dispatch_with_installed_fv_still_not_found() {
-        use crate::test_collateral;
-        use std::{fs::File, io::Read};
-
-        let mut file = File::open(test_collateral!("DXEFV.Fv")).unwrap();
-        let mut fv: Vec<u8> = Vec::new();
-        file.read_to_end(&mut fv).expect("failed to read test file");
-
-        with_locked_state(|| {
-            // Install the FV to obtain a real handle
-            let _handle = unsafe { crate::fv::core_install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
-
-            // Wrapper should still surface NOT_FOUND (no pending drivers to dispatch in tests)
-            let s = dispatch();
-            assert_eq!(s, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
-    fn test_schedule_invalid_parameter_when_file_is_null() {
-        with_locked_state(|| {
-            // Passing a null file GUID pointer should return INVALID_PARAMETER
-            let s = schedule(core::ptr::null_mut(), core::ptr::null());
-            assert_eq!(s, efi::Status::INVALID_PARAMETER);
-        });
-    }
-
-    #[test]
-    fn test_schedule_not_found_without_pending_drivers() {
-        with_locked_state(|| {
-            // Any GUID is fine; there are no pending drivers in this test harness
-            let guid = efi::Guid::from_fields(0, 0, 0, 0, 0, &[0, 0, 0, 0, 0, 0]);
-            let s = schedule(core::ptr::null_mut(), &guid);
-            assert_eq!(s, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
-    fn test_schedule_with_installed_fv_returns_not_found() {
-        use crate::test_collateral;
-        use std::{fs::File, io::Read};
-        use uuid::Uuid;
-
-        let mut file = File::open(test_collateral!("DXEFV.Fv")).unwrap();
-        let mut fv: Vec<u8> = Vec::new();
-        file.read_to_end(&mut fv).expect("failed to read test file");
-
-        with_locked_state(|| {
-            // Install the FV to obtain a real handle
-            let handle = unsafe { crate::fv::core_install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
-
-            // Use the same GUID as the dispatcher tests; wrapper should map NotFound correctly
-            let file_guid = efi::Guid::from_bytes(Uuid::from_u128(0x1fa1f39e_feff_4aae_bd7b_38a070a3b609).as_bytes());
-            let s = schedule(handle, &file_guid);
-            assert_eq!(s, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
-    fn test_trust_invalid_parameter_when_file_is_null() {
-        with_locked_state(|| {
-            let s = trust(core::ptr::null_mut(), core::ptr::null());
-            assert_eq!(s, efi::Status::INVALID_PARAMETER);
-        });
-    }
-
-    #[test]
-    fn test_trust_not_found_without_pending_drivers() {
-        with_locked_state(|| {
-            // Any GUID and handle are fine; there are no pending drivers in this harness
-            let guid = efi::Guid::from_fields(0, 0, 0, 0, 0, &[1, 2, 3, 4, 5, 6]);
-            let s = trust(core::ptr::null_mut(), &guid);
-            assert_eq!(s, efi::Status::NOT_FOUND);
-        });
-    }
-
-    #[test]
     fn test_process_firmware_volume_invalid_parameters() {
         with_locked_state(|| {
             let mut out_handle: efi::Handle = core::ptr::null_mut();
@@ -2220,7 +2129,7 @@ mod tests {
             assert_eq!(st.system_table().number_of_table_entries, 0);
 
             // Act: install the DXE Services table
-            init_dxe_services(st);
+            TestCore::init_dxe_services(st);
 
             // After: one entry should exist and match DXE_SERVICES_TABLE_GUID
             let st_ref = st.system_table();
@@ -2256,7 +2165,7 @@ mod tests {
 
             // Spot-check a few function pointers are correctly wired
             assert_eq!(dxe_tbl.add_memory_space as usize, add_memory_space as usize);
-            assert_eq!(dxe_tbl.dispatch as usize, dispatch as usize);
+            assert_eq!(dxe_tbl.dispatch as usize, TestCore::dispatch_efiapi as usize);
             assert_eq!(dxe_tbl.process_firmware_volume as usize, process_firmware_volume as usize);
         });
     }

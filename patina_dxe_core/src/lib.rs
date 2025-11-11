@@ -91,7 +91,7 @@ use patina_internal_cpu::{cpu::EfiCpu, interrupts::Interrupts};
 use protocols::PROTOCOL_DB;
 use r_efi::efi;
 
-use crate::config_tables::memory_attributes_table;
+use crate::{config_tables::memory_attributes_table, dispatcher::DispatcherContext, tpl_lock::TplMutex};
 
 #[doc(hidden)]
 #[macro_export]
@@ -157,12 +157,14 @@ pub trait Platform {
 }
 
 struct UefiState {
-
+    dispatcher_context: TplMutex<DispatcherContext>,
 }
 
 impl UefiState {
     const fn new() -> Self {
-        Self { }
+        Self {
+            dispatcher_context: TplMutex::new(efi::TPL_NOTIFY, DispatcherContext::new(), "Dispatcher Context"),
+        }
     }
 }
 
@@ -217,6 +219,8 @@ pub struct Core<P: Platform> {
     uefi_state: UefiState,
     _memory_state: PhantomData<P>,
 }
+
+unsafe impl <P: Platform> Sync for Core<P> {}
 
 impl <P: Platform> Default for Core<P> {
     fn default() -> Self {
@@ -409,7 +413,7 @@ impl <P: Platform> Core<P> {
 
             // UEFI driver dispatch
             let dispatched = dispatched
-                || dispatcher::dispatch().inspect_err(|err| log::error!("UEFI Driver Dispatch error: {err:?}"))?;
+                || self.dispatch_uefi_drivers().inspect_err(|err| log::error!("UEFI Driver Dispatch error: {err:?}"))?;
 
             if !dispatched {
                 break;
@@ -478,8 +482,8 @@ impl <P: Platform> Core<P> {
             config_tables::init_config_tables_support(st.boot_services_mut());
             runtime::init_runtime_support(st.runtime_services_mut());
             image::init_image_support(&self.hob_list, st);
-            dispatcher::init_dispatcher();
-            dxe_services::init_dxe_services(st);
+            Self::init_dispatcher();
+            Self::init_dxe_services(st);
             driver_services::init_driver_services(st.boot_services_mut());
 
             memory_attributes_protocol::install_memory_attributes_protocol();
@@ -538,7 +542,7 @@ impl <P: Platform> Core<P> {
     }
 
     /// Starts the core, dispatching all drivers.
-    pub fn start(mut self) -> Result<()> {
+    pub fn start(&'static mut self) -> Result<()> {
         log::info!("Registering default components");
         self.add_core_components();
         log::info!("Finished.");
@@ -553,7 +557,7 @@ impl <P: Platform> Core<P> {
 
         if let Some(extractor) = self.storage.get_service::<dyn SectionExtractor>() {
             log::debug!("Section Extractor service found, registering with FV and Dispatcher.");
-            dispatcher::register_section_extractor(extractor.clone());
+            self.register_section_extractor(extractor.clone());
             fv::register_section_extractor(extractor);
         }
 
@@ -571,7 +575,7 @@ impl <P: Platform> Core<P> {
 
         core_display_missing_arch_protocols();
 
-        dispatcher::display_discovered_not_dispatched();
+        self.display_discovered_not_dispatched();
 
         call_bds();
 

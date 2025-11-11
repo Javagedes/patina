@@ -8,7 +8,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use crate::{protocols::PROTOCOL_DB};
+use crate::{GCD, protocols::PROTOCOL_DB};
 use core::ffi::c_void;
 use patina::{
     guids::ZERO,
@@ -59,24 +59,24 @@ const TEST_GCD_MEM_SIZE: usize = 0x1000000;
 pub(crate) unsafe fn init_test_gcd(size: Option<usize>) {
     let size = size.unwrap_or(TEST_GCD_MEM_SIZE);
     let addr = unsafe { alloc::alloc::alloc(alloc::alloc::Layout::from_size_align(size, 0x1000).unwrap()) };
-    // unsafe { GCD.reset() };
-    // GCD.init(48, 16);
-    // unsafe {
-    //     GCD.add_memory_space(
-    //         GcdMemoryType::SystemMemory,
-    //         addr as usize,
-    //         TEST_GCD_MEM_SIZE,
-    //         efi::MEMORY_UC
-    //             | efi::MEMORY_WC
-    //             | efi::MEMORY_WT
-    //             | efi::MEMORY_WB
-    //             | efi::MEMORY_WP
-    //             | efi::MEMORY_RP
-    //             | efi::MEMORY_XP
-    //             | efi::MEMORY_RO,
-    //     )
-    //     .unwrap()
-    // };
+    unsafe { GCD.reset() };
+    GCD.init(48, 16);
+    unsafe {
+        GCD.add_memory_space(
+            GcdMemoryType::SystemMemory,
+            addr as usize,
+            TEST_GCD_MEM_SIZE,
+            efi::MEMORY_UC
+                | efi::MEMORY_WC
+                | efi::MEMORY_WT
+                | efi::MEMORY_WB
+                | efi::MEMORY_WP
+                | efi::MEMORY_RP
+                | efi::MEMORY_XP
+                | efi::MEMORY_RO,
+        )
+        .unwrap()
+    };
 }
 
 /// Resets the ALLOCATOR map to empty and resets the static allocators
@@ -88,11 +88,6 @@ pub(crate) unsafe fn reset_allocators() {
 pub(crate) unsafe fn init_test_protocol_db() {
     unsafe { PROTOCOL_DB.reset() };
     PROTOCOL_DB.init_protocol_db();
-}
-
-/// Reset the dispatcher context to default empty state.
-pub(crate) fn reset_dispatcher_context() {
-    crate::dispatcher::reset_dispatcher_context_for_tests();
 }
 
 pub(crate) fn build_test_hob_list(mem_size: u64) -> *const c_void {
