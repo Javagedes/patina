@@ -17,8 +17,8 @@ polymorphism.
 
 ## Motivation
 
-1. Improvements to initial stack size
-2. Testing improvementsfor Patina maintainers
+1. Reduction of stack size
+2. Testing improvements for Patina maintainers
 3. Improved code cleanliness for Patina maintaineres
 4. Clear interface for Platform implementors on configuration options
 
@@ -34,7 +34,7 @@ It is suggested you read:
 
 ## Goals
 
-1. Stack size
+1. Reduction of stack size
    1. Static definition of the Core reduces initial stack frame size
    2. Deferred instantiation of components reduces initial stack frame size
 
@@ -93,7 +93,8 @@ It is suggested you read:
 
 ## Unresolved Questions
 
-- How to handle components like the advanced logger that need the hob list. Maybe provide the hob list in the `components` function?
+- How to handle components like the advanced logger that need the hob list. Maybe provide the hob list in the
+  `components` function?
 
 ## Prior Art (Existing PI C Implementation)
 
@@ -182,7 +183,7 @@ Please note that to reduce the complexity of the PR implementing this RFC, movin
 being `static` will happen over multiple PRs. The first one we will do is the dispatcher context, so the example below
 will show the dispatcher context being moved into `UefiState`
 
-Another benifit with this layout is that some of the dyn traitobjects currently used in statics (because we cannot
+Another benefit with this layout is that some of the dyn trait objects currently used in statics (because we cannot
 know the type at compile time) can now be converted to static polymorphism because it is all handled by the types
 specified in the `Platform` trait.
 
@@ -316,7 +317,7 @@ pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
 ## Guide-Level Explanation
 
 In this RFC, we are attempting to clean up and consolidate the static usage in the `patina_dxe_core` crate, which has
-many benifits to both patina developers and platform owners. For Patina developers, by consolidating all static usage
+many benefits to both patina developers and platform owners. For Patina developers, by consolidating all static usage
 into the `Core` struct, it allows us to much more easily test our code because we do not have to worry about some
 static state being affected by other tests. This also allows us to easily specify generics in more locations throughout
 the codebase, which enables easier testing because we can mock parts that we are not actually testing, but must exist
@@ -328,7 +329,7 @@ platform, or as configurations evolve with Patina.
 
 Generically, the combination of both a static core and delayed instantiation of components should reduce the size of
 the initial stack frame. While the size of the initial stack frame is not currently a concern, as platforms begin to
-use more patina components, it will be. This change will sacrifice some binary size (size of the `Core` object) to
+use more patina components, it will be. This change will increase the binary size (size of the `Core` object) to
 reduce the initial stack frame size (size of `Core` + `Config`'s + `Component`'s).
 
 In a STD compilation, it was seen that the initial stack frame was reduced from 568 to 488 with this change (with no
