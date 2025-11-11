@@ -12,6 +12,8 @@ polymorphism.
   performance differences would be incredibly small, at least for the impacted code today.
 - 2025-11-11: Added test performance impact as tests can remove the global lock, and run in parallel.
 - 2025-11-11: Remove associated constant from Platform trait to allow usage of `mockall::automock`
+- 2025-11-11: Specify that not all statics will necessarily go in `UefiState` struct. Specify that the intent is to
+  better organize the fields inside of the core, instead of having a core with 30 fields.
 
 ## Motivation
 
@@ -170,10 +172,15 @@ impl <P: Platform> Core<P> {
 ### Creation of the `UefiState` struct
 
 Since we will be moving all of the static state into the Core, we need a clean way to store all of this state. To do
-that, we will create a new struct called `UefiState` that stores everything that is currently static. Please note that
-to reduce the complexity of the PR, moving things into `UefiState` and out of being `static` will happen over multiple
-PRs. The first one we will do is the dispatcher context, so the example below will show the dispatcher context being
-moved into `UefiState`
+that, we will create a new struct called `UefiState` to store some of the UEFI related statics (Such as the dispatcher
+context, etc.). Other statics that are more "Kernel-like" in nature will be moved either to a new structure or into the
+Core itself. The decision on where to put each individual static is an implementation detail and will not be decided in
+this RFC. The intent is to specify that we will purposefully organize the statics inside the core instead of having all
+statics sit in the top-level Core struct as fields.
+
+Please note that to reduce the complexity of the PR implementing this RFC, moving things into the Core and away from
+being `static` will happen over multiple PRs. The first one we will do is the dispatcher context, so the example below
+will show the dispatcher context being moved into `UefiState`
 
 Another benifit with this layout is that some of the dyn traitobjects currently used in statics (because we cannot
 know the type at compile time) can now be converted to static polymorphism because it is all handled by the types
