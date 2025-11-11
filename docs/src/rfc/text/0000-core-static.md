@@ -11,6 +11,7 @@ polymorphism.
 - 2025-11-11: Clarified that the performance gains are a side affect, not the intent of this change and that the
   performance differences would be incredibly small, at least for the impacted code today.
 - 2025-11-11: Added test performance impact as tests can remove the global lock, and run in parallel.
+- 2025-11-11: Remove associated constant from Platform trait to allow usage of `mockall::automock`
 
 ## Motivation
 
@@ -83,8 +84,8 @@ It is suggested you read:
 
 \* While performance improvements are mentioned here, they are only a side affect of the change and not the intent of
    of the change. By switching to static trait resolution at compile time (static polymorphism) rather then dynamic
-   polymorphism at runtime, we save some performance on vtable function poiner indirection. Unless the code is
-   incredibly "hot", the performance improvements will **not** be noticible. As it stands, none of the dyn trait
+   polymorphism at runtime, we save some performance on vtable function pointer indirection. Unless the code is
+   incredibly "hot", the performance improvements will **not** be noticeable. As it stands, none of the dyn trait
    objects impacted by the change are "hot" enough code for performance to be impacted, though that does not mean
    future additions won't be.
 
@@ -113,11 +114,16 @@ traits with complex types specified. This interface is cleaner, and provides les
 To start, this trait will have a limited number of configuration options as shown below, but it is expected that more
 will be specified as needed. Note that this trait is now what adds components / configs / services, instead of the core.
 
+**Note:** It is elected **not** to use associated consts (e.g. const fields) in the Platform trait as `automock` does not
+mocking traits that use const fields without defaults. This can be re-evaluated at a different time if need be.
+
 ```rust
 // In patina_dxe_core/src/lib.rs
+#[cfg_attr(test, mockall::automock)]
 trait Platform {
-    const PRIORITIZE_32_BIT_MEMORY: bool = false;
     type Extractor: SectionExtractor;
+
+    fn prioritize_32_bit_memory() -> bool { false }
 
     fn section_extractor() -> Self::SectionExtractor;
 
@@ -145,7 +151,7 @@ impl <P: Platform> Core<P> {
     pub fn start(mut self, physical_hob_list: *const c_void) -> ! {
         ...
 
-        GCD.prioritize_32_bit_memory(P::PRIORITIZE_32_BIT_MEMORY);
+        GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
 
         ...
     }
@@ -320,10 +326,10 @@ reduce the initial stack frame size (size of `Core` + `Config`'s + `Component`'s
 
 In a STD compilation, it was seen that the initial stack frame was reduced from 568 to 488 with this change (with no
 registered components, configs, or services). Adding components, configs, or services increased the initial stack size
-of the pre-rfc implementation by the size of the object + minimal overhead where as with this implementaiton, almost
+of the pre-rfc implementation by the size of the object + minimal overhead where as with this implementation, almost
 no additional stack frame size was seen.
 
 Additionally, I will note that there will be a very (and I mean very) slight
 performance increase as we certain functionalities (such as the section extractor) move away from dyn trait objects
 and vtable indirection. I want to reiterate that this is incredibly small performance gain. Almost worth not
-mentioning, but I do find it important to atleast mention in writing.
+mentioning, but I do find it important to at least mention in writing.
