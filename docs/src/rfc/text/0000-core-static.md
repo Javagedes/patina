@@ -7,11 +7,15 @@ polymorphism.
 ## Change Log
 
 - 2025-11-10: Initial RFC created.
+- 2025-11-11: Clarified that this change reduces the initial stack frame size by sacrificing some binary size.
+- 2025-11-11: Clarified that the performance gains are a side affect, not the intent of this change and that the
+  performance differences would be incredibly small, at least for the impacted code today.
+- 2025-11-11: Added test performance impact as tests can remove the global lock, and run in parallel.
 
 ## Motivation
 
-1. Improvements to size and performance
-2. Easier testing for Patina maintainers
+1. Improvements to initial stack size
+2. Testing improvementsfor Patina maintainers
 3. Improved code cleanliness for Patina maintaineres
 4. Clear interface for Platform implementors on configuration options
 
@@ -27,19 +31,18 @@ It is suggested you read:
 
 ## Goals
 
-1. Size / performance improvements
-   1. Static definition of the Core reduces initial stack size
-   2. Defferred instantiation of components reduces stack size
-   3. Static resolution of dependencies (static polymorphism) over dyn Trait interfaces improves performance
-   4. Static resolution of dyn trait objects in statics
+1. Stack size
+   1. Static definition of the Core reduces initial stack frame size
+   2. Deferred instantiation of components reduces initial stack frame size
 
-2. Easier testing for Patina maintainers:
+2. Testing improvements for Patina maintainers
    1. Removal of statics reduces complexity writing tests that are properly reset
    2. Generics for Core dependencies allows for easier mocking
+   3. Improved testing performance
 
 3. Improved code cleanliness for Patina maintaineres
    1. Never calling "efiapi" functions
-   2. Making "efiapi" functions a light wrapper around pure-rust impelmentations
+   2. Making "efiapi" functions a light wrapper around pure-rust implementations
 
 4. Clear Platform Interface and Configuration
    1. Clearly describes all configurations available to the platform.
@@ -47,18 +50,19 @@ It is suggested you read:
 
 ## Requirements
 
-1. Size / performance improvements
+1. Stack size / performance improvements*
     1. Platforms will declare the `Core` as a static in their binary file
-    2. Platforms will declare their `Core` Generics via the `Platform` trait (described in (4))
-    3. Current usage of dynamic polymorphism in statics be switched to static polymorphism (e.g. section_extractor in
-       the dispatcher context)
-    4. Component, Service, and Config instantiation is moved to a `Platform` trait method, and thus does not take
+    2. Platforms will declare their `Core` generics via the `Platform` trait (described in (4))
+    3. Component, Service, and Config instantiation is moved to a `Platform` trait method, and thus does not take
        up space on the initial stack frame.
+    4. Current usage of dynamic polymorphism in statics be switched to static polymorphism (e.g. section_extractor in
+       the dispatcher context)*
 
-2. Easier Testing for Patina maintainers
+2. Testing improvements for Patina maintainers
     1. All statics are moved into the `UefiState` field of the `Core`. e.g. `SpinLockedGcd`, `DispatcherContext`, etc.
     2. Possibility to add generics at additional levels, to make mocking for tests simple
     3. Ignore code coverage for all "efiapi" functions
+    4. Removal of global lock, allowing for more parallel testing.
 
 3. Improved code cleanliness for Patina maintaineres
     1. All pure-rust methods directly access `UefiState` field in the `Core`. e.g. `self.uefi_state.<thing>`.
@@ -77,9 +81,16 @@ It is suggested you read:
     3. `const` values for setting configurations that can be created at compile-time
     4. The Platform trait itself will remain stateless.
 
+\* While performance improvements are mentioned here, they are only a side affect of the change and not the intent of
+   of the change. By switching to static trait resolution at compile time (static polymorphism) rather then dynamic
+   polymorphism at runtime, we save some performance on vtable function poiner indirection. Unless the code is
+   incredibly "hot", the performance improvements will **not** be noticible. As it stands, none of the dyn trait
+   objects impacted by the change are "hot" enough code for performance to be impacted, though that does not mean
+   future additions won't be.
+
 ## Unresolved Questions
 
-- How to handle components like the advanced logger that need the hob list. Maybe provide it in the `components` function?
+- How to handle components like the advanced logger that need the hob list. Maybe provide the hob list in the `components` function?
 
 ## Prior Art (Existing PI C Implementation)
 
@@ -228,7 +239,7 @@ impl <P: Platform> Core {
                 return Ok(());
             }
         }
-        Err(EfiError::NotFound0)
+        Err(EfiError::NotFound)
     }
 
     extern "efiapi" fn trust_efiapi(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
@@ -267,17 +278,17 @@ impl patina::Platform for Platform {
 
     fn section_extractor -> Self::Extractor { CompositeSectionExtractor::default() }
 
-    fn components(adder: &mut Adder<Component>) {
-        adder.add_component(...);
-        adder.add_component(...);
+    fn components(add: &mut Add<Component>) {
+        add.add_component(...);
+        add.add_component(...);
     }
 
-    fn configs(adder: &mut Adder<Config>) {
-        adder.add_config(...);
+    fn configs(add: &mut Add<Config>) {
+        add.add_config(...);
     }
 
-    fn services(c: &mut Addr<Service>) {
-        adder.add_service(...);
+    fn services(c: &mut Add<Service>) {
+        add.add_service(...);
     }
 }
 
@@ -302,6 +313,17 @@ For platform owners, static polymorphism allows them to fully define all of thei
 dependencies at compile time, which will result in compilation errors when initially configuring the core for their
 platform, or as configurations evolve with Patina.
 
-Generically, this should very slightly improve performance as we stop using vtable's in some key places, but more
-importantly, we reduce the size of the initial stack frame to almost nothing as the initial core is a static in the
-binary, and component instantiation is moved elsewhere.
+Generically, the combination of both a static core and delayed instantiation of components should reduce the size of
+the initial stack frame. While the size of the initial stack frame is not currently a concern, as platforms begin to
+use more patina components, it will be. This change will sacrifice some binary size (size of the `Core` object) to
+reduce the initial stack frame size (size of `Core` + `Config`'s + `Component`'s).
+
+In a STD compilation, it was seen that the initial stack frame was reduced from 568 to 488 with this change (with no
+registered components, configs, or services). Adding components, configs, or services increased the initial stack size
+of the pre-rfc implementation by the size of the object + minimal overhead where as with this implementaiton, almost
+no additional stack frame size was seen.
+
+Additionally, I will note that there will be a very (and I mean very) slight
+performance increase as we certain functionalities (such as the section extractor) move away from dyn trait objects
+and vtable indirection. I want to reiterate that this is incredibly small performance gain. Almost worth not
+mentioning, but I do find it important to atleast mention in writing.
