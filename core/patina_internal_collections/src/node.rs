@@ -46,6 +46,8 @@ where
     pub const fn new() -> Storage<'a, D> {
         let ptr = NonNull::<Node<D>>::dangling();
         Self {
+            // SAFETY: Elements are dereferenced from the zero-length slice. Because the slice length is 0,
+            // no invalid memory accesses occur.
             data: unsafe { slice::from_raw_parts_mut(ptr.as_ptr(), 0) },
             length: 0,
             available: AtomicPtr::new(core::ptr::null_mut()),
@@ -55,6 +57,10 @@ where
     /// Create a new storage container with a slice of memory.
     pub fn with_capacity(slice: &'a mut [u8]) -> Storage<'a, D> {
         let storage = Storage {
+            // SAFETY: This is reinterpreting a byte slice as a Node<D> slice.
+            // 1. The alignment is checked implicitly by the slice bounds.
+            // 2. The correct number of Node<D> elements that fit in the byte slice is calculated.
+            // 3. The lifetime ensures the byte slice remains valid for the storage's lifetime
             data: unsafe {
                 slice::from_raw_parts_mut::<'a, Node<D>>(
                     slice as *mut [u8] as *mut Node<D>,
@@ -98,6 +104,7 @@ where
     pub fn add(&mut self, data: D) -> Result<(usize, &mut Node<D>)> {
         let available_ptr = self.available.load(Ordering::SeqCst);
         if !available_ptr.is_null() && self.length != self.capacity() {
+            // SAFETY: available_ptr is checked to be non-null and points to a valid Node<D> in self.data.
             let node = unsafe { &mut *available_ptr };
             self.available.store(node.right_ptr(), Ordering::SeqCst);
             node.set_left(None);
@@ -121,11 +128,16 @@ where
         if node.is_null() {
             return;
         }
+        // SAFETY: node is checked to be non-null and is expected to point to a valid Node<D>
+        // that was previously allocated from this storage. The caller is responsible for
+        // ensuring the pointer is valid.
         let node = unsafe { &mut *node };
         node.set_parent(None);
         node.set_left(None);
         let available_ptr = self.available.load(Ordering::SeqCst);
         if !available_ptr.is_null() {
+            // SAFETY: available_ptr is non-null and points to the head of our free list,
+            // which contains valid Node<D> pointers from self.data.
             let root = unsafe { &mut *available_ptr };
             node.set_right(Some(root));
             root.set_left(Some(node));
@@ -181,6 +193,10 @@ where
     ///
     /// O(n)
     pub fn resize(&mut self, slice: &'a mut [u8]) {
+        // SAFETY: This is reinterpreting a byte slice as a Node<D> slice.
+        // 1. The alignment is handled by slice casting rules
+        // 2. The correct number of Node<D> elements that fit in the byte slice is calculated
+        // 3. The lifetime 'a ensures the byte slice remains valid for the storage's lifetime
         let buffer = unsafe {
             slice::from_raw_parts_mut::<'a, Node<D>>(
                 slice as *mut [u8] as *mut Node<D>,
@@ -294,6 +310,7 @@ where
         let node = self.parent.load(Ordering::SeqCst);
         match node.is_null() {
             true => None,
+            // SAFETY: If the pointer is not null, it points to a valid Node<D> in the storage.
             false => Some(unsafe { &*node }),
         }
     }
@@ -317,6 +334,7 @@ where
         let node = self.left.load(Ordering::SeqCst);
         match node.is_null() {
             true => None,
+            // SAFETY: If the pointer is not null, it points to a valid Node<D> in the storage.
             false => Some(unsafe { &*node }),
         }
     }
@@ -340,6 +358,7 @@ where
         let node = self.right.load(Ordering::SeqCst);
         match node.is_null() {
             true => None,
+            // SAFETY: If the pointer is not null, it points to a valid Node<D> in the storage.
             false => Some(unsafe { &*node }),
         }
     }

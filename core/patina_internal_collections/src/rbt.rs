@@ -77,6 +77,8 @@ where
         if root_ptr.is_null() {
             return None;
         }
+        // SAFETY: root_ptr was just checked for being null. It points to a valid Node<D>
+        // allocated in self.storage.
         Some(unsafe { &*root_ptr })
     }
 
@@ -102,6 +104,8 @@ where
             return Ok(idx);
         }
 
+        // SAFETY: root was just checked for being null. It points to a valid Node<D>
+        // allocated in self.storage.
         let root = unsafe { &mut *self.root.load(atomic::Ordering::SeqCst) };
 
         Self::add_node(root, node)?;
@@ -194,6 +198,8 @@ where
     ///
     pub unsafe fn get_mut(&mut self, key: &D::Key) -> Option<&mut D> {
         match self.get_node(key) {
+            // SAFETY: The pointer comes from as_mut_ptr() on a valid node reference obtained from get_node().
+            // The caller is responsible for ensuring the mutable reference doesn't modify key-affecting values.
             Some(node) => Some(unsafe { &mut (*node.as_mut_ptr()).data }),
             None => None,
         }
@@ -1247,6 +1253,8 @@ mod tests {
         let root_ptr = AtomicPtr::new(root.as_mut_ptr());
         Rbt::<i32>::remove_node_from_tree(&root_ptr, left);
 
+        // SAFETY: The root_ptr was initialized with a valid node pointer and may have been updated
+        // by remove_node_from_tree. The pointer points to a Node<D> in storage.
         let new_root = unsafe { &*root_ptr.load(Ordering::SeqCst) };
 
         // Validate the new root
@@ -1332,6 +1340,8 @@ mod tests {
 
         Rbt::<i32>::remove_node_from_tree(&root_ptr, right_r);
 
+        // SAFETY: The root_ptr was initialized with a valid node pointer and may have been updated
+        // by remove_node_from_tree. The pointer points to a Node<D> in storage.
         let new_root = unsafe { &*root_ptr.load(Ordering::SeqCst) };
         assert_eq!(new_root.as_mut_ptr(), root.as_mut_ptr());
         assert_eq!(new_root.data, 17);
@@ -1424,6 +1434,8 @@ mod tests {
 
         Rbt::<i32>::remove_node_from_tree(&root_ptr, right_l);
 
+        // SAFETY: The root_ptr was initialized with a valid node pointer and may have been updated
+        // by remove_node_from_tree. The pointer points to a Node<D> in storage.
         let new_root = unsafe { &*root_ptr.load(Ordering::SeqCst) };
         assert_eq!(new_root.as_mut_ptr(), root.as_mut_ptr());
         assert_eq!(new_root.data, 17);
@@ -1510,6 +1522,8 @@ mod tests {
         let root_ptr = AtomicPtr::new(root.as_mut_ptr());
         Rbt::<i32>::remove_node_from_tree(&root_ptr, right_l);
 
+        // SAFETY: The root_ptr was initialized with a valid node pointer and may have been updated
+        // by remove_node_from_tree. The pointer points to a Node<D> in storage.
         let new_root = unsafe { &*root_ptr.load(Ordering::SeqCst) };
 
         assert_eq!(new_root.as_mut_ptr(), root.as_mut_ptr());
@@ -1597,6 +1611,8 @@ mod tests {
         let root_ptr = AtomicPtr::new(root.as_mut_ptr());
         Rbt::<i32>::remove_node_from_tree(&root_ptr, right_l);
 
+        // SAFETY: The root_ptr was initialized with a valid node pointer and may have been updated
+        // by remove_node_from_tree. The pointer points to a Node<D> in storage.
         let new_root = unsafe { &*root_ptr.load(Ordering::SeqCst) };
 
         assert_eq!(new_root.as_mut_ptr(), root.as_mut_ptr());
@@ -1669,18 +1685,24 @@ mod tests {
 
         for i in 0..RBT_MAX_SIZE {
             let idx = rbt.get_idx(&(i + 1)).unwrap();
+            // SAFETY: The value is modified (second tuple element), not the key (first element),
+            // so the tree ordering remains valid.
             unsafe { rbt.get_with_idx_mut(idx).unwrap().1 = i + 1 };
             assert_eq!(rbt.get_with_idx(idx).unwrap().1, i + 1);
         }
+        // SAFETY: A test that an out-of-bounds index returns None.
         unsafe {
             assert!(rbt.get_with_idx_mut(RBT_MAX_SIZE).is_none());
         }
         assert!(rbt.get_with_idx(RBT_MAX_SIZE).is_none());
 
         for i in 0..RBT_MAX_SIZE {
+            // SAFETY: The value is modified (second tuple element), not the key (first element),
+            // so the tree ordering remains valid.
             unsafe { rbt.get_mut(&(i + 1)).unwrap().1 = i };
             assert_eq!(rbt.get(&(i + 1)).unwrap().1, i);
         }
+        // SAFETY: A test that a non-existent key returns None.
         unsafe {
             assert!(rbt.get_mut(&(RBT_MAX_SIZE + 1)).is_none());
         }

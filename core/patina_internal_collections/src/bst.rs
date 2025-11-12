@@ -69,10 +69,10 @@ where
     /// Returns the current root of the tree.
     fn root(&self) -> Option<&Node<D>> {
         let root_ptr = self.root.load(atomic::Ordering::SeqCst);
-        if root_ptr.is_null() {
-            return None;
-        }
-        Some(unsafe { &*root_ptr })
+
+        // SAFETY: The root pointer is either null or points to a valid Node<D> allocated in self.storage.
+        // as_ref() handles the null check internally.
+        unsafe { root_ptr.as_ref() }
     }
 
     /// Adds a value into the tree.
@@ -95,6 +95,8 @@ where
             return Ok(idx);
         }
 
+        // SAFETY: root was checked for null above. The pointer points to a valid Node<D>
+        // allocated in self.storage.
         let root = unsafe { &*self.root.load(atomic::Ordering::SeqCst) };
         Self::add_node(root, node)?;
         Ok(idx)
@@ -186,6 +188,9 @@ where
         match self.get_node(key) {
             Some(node) => {
                 let ptr = node.as_mut_ptr();
+                // SAFETY: The pointer comes from as_mut_ptr() on a valid node reference obtained from get_node().
+                // The caller is responsible for ensuring that the mutable reference doesn't modify key-affecting
+                // values.
                 Some(unsafe { &mut (*ptr).data })
             }
             None => None,
@@ -725,18 +730,24 @@ mod tests {
 
         for i in 0..BST_MAX_SIZE {
             let idx = bst.get_idx(&(i + 1)).unwrap();
+            // SAFETY: The value is modified (second tuple element), not the key (first element),
+            // so the tree ordering remains valid.
             unsafe { bst.get_with_idx_mut(idx).unwrap().1 = i + 1 };
             assert_eq!(bst.get_with_idx(idx).unwrap().1, i + 1);
         }
+        // SAFETY: A test that an out-of-bounds index returns None.
         unsafe {
             assert!(bst.get_with_idx_mut(BST_MAX_SIZE).is_none());
         }
         assert!(bst.get_with_idx(BST_MAX_SIZE).is_none());
 
         for i in 0..BST_MAX_SIZE {
+            // SAFETY: The value is modified (second tuple element), not the key (first element),
+            // so the tree ordering remains valid.
             unsafe { bst.get_mut(&(i + 1)).unwrap().1 = i };
             assert_eq!(bst.get(&(i + 1)).unwrap().1, i);
         }
+        // SAFETY: A test that a non-existent key returns None.
         unsafe {
             assert!(bst.get_mut(&(BST_MAX_SIZE + 1)).is_none());
         }
