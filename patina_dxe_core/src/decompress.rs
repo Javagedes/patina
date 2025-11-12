@@ -20,7 +20,6 @@ use alloc::vec;
 
 use mu_rust_helpers::uefi_decompress::{DecompressionAlgorithm, decompress_into_with_algo};
 use patina::{
-    component::prelude::Service,
     pi::fw_fs::{self, ffs},
 };
 use patina_ffs::{
@@ -45,18 +44,16 @@ impl DecompressProtocolInstaller {
 
 /// Section extractor that provides UEFI decompression, with an optional additional [SectionExtractor] implementation.
 #[derive(Default)]
-pub struct CoreExtractor(Option<Service<dyn SectionExtractor>>);
+pub struct CoreExtractor<E: SectionExtractor>(Option<E>);
 
-impl CoreExtractor {
+impl<E: SectionExtractor> CoreExtractor<E> {
     /// Creates a new [CoreExtractor] with no additional extractor.
     pub const fn new() -> Self {
         Self(None)
     }
 
-    /// Sets an additional [SectionExtractor] to be used if UEFI decompression does not apply.
-    pub fn set_extractor(&mut self, extractor: Service<dyn SectionExtractor>) -> &mut Self {
+    pub fn set_extractor(&mut self, extractor: E) {
         self.0 = Some(extractor);
-        self
     }
 
     /// Attempts to decompress the section using UEFI decompression algorithms.
@@ -104,7 +101,7 @@ impl CoreExtractor {
     }
 }
 
-impl SectionExtractor for CoreExtractor {
+impl <E: SectionExtractor> SectionExtractor for CoreExtractor<E> {
     fn extract(&self, section: &patina_ffs::section::Section) -> Result<vec::Vec<u8>, FirmwareFileSystemError> {
         match Self::uefi_decompress_extract(section) {
             Err(FirmwareFileSystemError::Unsupported) => (),

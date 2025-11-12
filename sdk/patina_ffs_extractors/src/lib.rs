@@ -39,3 +39,6 @@ pub use lzma::LzmaSectionExtractor;
 
 mod composite;
 pub use composite::CompositeSectionExtractor;
+
+mod null;
+pub use null::NullSectionExtractor;

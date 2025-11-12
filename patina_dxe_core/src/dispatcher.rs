@@ -14,7 +14,6 @@ use alloc::{
 use core::{cmp::Ordering, ffi::c_void};
 use mu_rust_helpers::{function, guid::guid_fmt};
 use patina::{
-    component::service::Service,
     error::EfiError,
     performance::{
         logging::{perf_function_begin, perf_function_end},
@@ -33,7 +32,7 @@ use r_efi::efi;
 use mu_rust_helpers::guid::CALLER_ID;
 
 use crate::{
-    Core, Platform, decompress::CoreExtractor, events::EVENT_DB, fv::{core_install_firmware_volume, device_path_bytes_for_fv_file}, image::{core_load_image, core_start_image}, protocol_db::DXE_CORE_HANDLE, protocols::PROTOCOL_DB,
+    Core, Platform, decompress::CoreExtractor, events::EVENT_DB, fv::device_path_bytes_for_fv_file, image::{core_load_image, core_start_image}, protocol_db::DXE_CORE_HANDLE, protocols::PROTOCOL_DB,
 };
 
 // Default Dependency expression per PI spec v1.2 Vol 2 section 10.9.
@@ -124,7 +123,7 @@ impl Ord for OrdGuid {
 }
 
 #[derive(Default)]
-pub struct DispatcherContext {
+pub struct DispatcherContext<E: SectionExtractor> {
     executing: bool,
     arch_protocols_available: bool,
     pending_drivers: Vec<PendingDriver>,
@@ -133,10 +132,10 @@ pub struct DispatcherContext {
     associated_before: BTreeMap<OrdGuid, Vec<PendingDriver>>,
     associated_after: BTreeMap<OrdGuid, Vec<PendingDriver>>,
     processed_fvs: BTreeSet<efi::Handle>,
-    section_extractor: CoreExtractor,
+    section_extractor: CoreExtractor<E>,
 }
 
-impl DispatcherContext {
+impl <E: SectionExtractor> DispatcherContext<E> {
     pub const fn new() -> Self {
         Self {
             executing: false,
@@ -150,9 +149,11 @@ impl DispatcherContext {
             section_extractor: CoreExtractor::new(),
         }
     }
-}
 
-unsafe impl Send for DispatcherContext {}
+    pub fn set_extractor(&mut self, extractor: E) {
+        self.section_extractor.set_extractor(extractor);
+    }
+}
 
 impl <P: Platform> Core<P> {
     pub(crate)fn dispatch_uefi_drivers(&self) -> Result<bool, EfiError> {
@@ -270,7 +271,7 @@ impl <P: Platform> Core<P> {
 
                         let volume_address: u64 = data_ptr.as_ptr() as u64;
                         // Safety: FV section data is stored in the dispatcher and is valid until end of UEFI (nothing drops it).
-                        let res = unsafe { core_install_firmware_volume(volume_address, Some(candidate.parent_fv_handle)) };
+                        let res = unsafe { self.install_firmware_volume(volume_address, Some(candidate.parent_fv_handle)) };
 
                         if res.is_ok() {
                             dispatch_attempted = true;
@@ -313,6 +314,7 @@ impl <P: Platform> Core<P> {
                 let status = (fvb.get_physical_address)(fvb_ptr, core::ptr::addr_of_mut!(fv_address));
                 if status.is_error() {
                     log::error!("Failed to get physical address for fvb handle {handle:#x?}. Error: {status:#x?}");
+                    log::error!("{:?}", EfiError::from(status));
                     continue;
                 }
 
@@ -508,10 +510,6 @@ impl <P: Platform> Core<P> {
             .expect("Failed to register protocol notify on fv protocol.");
     }
 
-    pub(crate) fn register_section_extractor(&self, extractor: Service<dyn SectionExtractor>) {
-        self.uefi_state.dispatcher_context.lock().section_extractor.set_extractor(extractor);
-    }
-
     pub(crate) fn display_discovered_not_dispatched(&self) {
         for driver in &self.uefi_state.dispatcher_context.lock().pending_drivers {
             log::warn!("Driver {:?} found but not dispatched.", guid_fmt!(driver.file_name));
@@ -538,13 +536,9 @@ mod tests {
     use uuid::uuid;
 
     use super::*;
-    use crate::{test_collateral, test_support};
+    use crate::{MockPlatformC, test_collateral, test_support};
 
-    struct Platform;
-
-    impl crate::Platform for Platform { }
-
-    type TestCore = Core<Platform>;
+    type TestCore = Core<MockPlatformC>;
 
     // Simple logger for log crate to dump stuff in tests
     struct SimpleLogger;
@@ -653,7 +647,7 @@ mod tests {
         set_logger();
         with_locked_state(|| {
             TestCore::init_dispatcher();
-            TestCore::new().register_section_extractor(Service::mock(Box::new(patina_ffs_extractors::BrotliSectionExtractor)));
+            TestCore::new().uefi_state.dispatcher_context.lock().set_extractor(patina_ffs_extractors::NullSectionExtractor{});
         });
     }
 
@@ -672,7 +666,7 @@ mod tests {
     
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
 
@@ -711,7 +705,7 @@ mod tests {
 
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             // Monkey Patch get_physical_address to one that returns an error.
             let protocol = PROTOCOL_DB
@@ -742,7 +736,7 @@ mod tests {
 
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             // Monkey Patch get_physical_address to set address to 0.
             let protocol = PROTOCOL_DB
@@ -772,7 +766,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let fv_phys_addr = fv_raw.expose_provenance() as u64;
-            let handle = unsafe { crate::fv::core_install_firmware_volume(fv_phys_addr, None).unwrap() };
+            let handle = unsafe { CORE.install_firmware_volume(fv_phys_addr, None).unwrap() };
 
             // Monkey Patch get_physical_address to set to a slightly invalid address.
             let protocol = PROTOCOL_DB
@@ -805,7 +799,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
 
             // 1 child FV should be pending contained in NESTEDFV.Fv
@@ -829,7 +823,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
 
@@ -853,7 +847,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let _ =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
             TestCore::core_fw_vol_event_protocol_notify(std::ptr::null_mut::<c_void>(), std::ptr::null_mut::<c_void>());
 
             const DRIVERS_IN_DXEFV: usize = 130;
@@ -898,7 +892,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
 
@@ -923,7 +917,7 @@ mod tests {
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
-                unsafe { crate::fv::core_install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
+                unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
 
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
 
@@ -952,7 +946,7 @@ mod tests {
             static CORE: TestCore = TestCore::new();
             CORE.set_instance();
             // Install the FV to obtain a real handle
-            let handle = unsafe { crate::fv::core_install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
+            let handle = unsafe { CORE.install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
 
             // Use the same GUID as the dispatcher tests; wrapper should map NotFound correctly
             let file_guid = efi::Guid::from_bytes(Uuid::from_u128(0x1fa1f39e_feff_4aae_bd7b_38a070a3b609).as_bytes());
@@ -1032,7 +1026,7 @@ mod tests {
                 )
                 .unwrap();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
-            let handle = unsafe { crate::fv::core_install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
+            let handle = unsafe { CORE.install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
 
             CORE.add_fv_handles(vec![handle]).expect("Failed to add FV handle");
             CORE.dispatch().unwrap();

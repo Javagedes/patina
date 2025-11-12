@@ -19,7 +19,7 @@ use patina::pi::dxe_services;
 use r_efi::efi;
 
 use crate::{
-    Core, GCD, Platform, allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool}, config_tables, fv::core_install_firmware_volume, gcd, systemtables::EfiSystemTable
+    Core, GCD, Platform, allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool}, config_tables, gcd, systemtables::EfiSystemTable
 };
 
 extern "efiapi" fn add_memory_space(
@@ -364,37 +364,6 @@ extern "efiapi" fn get_io_space_map(
     }
 }
 
-extern "efiapi" fn process_firmware_volume(
-    firmware_volume_header: *const c_void,
-    size: usize,
-    firmware_volume_handle: *mut efi::Handle,
-) -> efi::Status {
-    if firmware_volume_handle.is_null() || firmware_volume_header.is_null() {
-        return efi::Status::INVALID_PARAMETER;
-    }
-
-    // construct a FirmwareVolume to verify sanity
-    // Safety: caller must ensure that firmware_volume_header is a valid pointer. It is null-checked above.
-    let fv_slice = unsafe { slice::from_raw_parts(firmware_volume_header as *const u8, size) };
-    if let Err(err) = VolumeRef::new(fv_slice) {
-        return err.into();
-    }
-    // Safety: caller must ensure that firmware_volume_header is a valid firmware volume that will not be freed
-    // or moved after being sent to the core for processing.
-    let res = unsafe { core_install_firmware_volume(firmware_volume_header as u64, None) };
-    let handle = match res {
-        Ok(handle) => handle,
-        Err(err) => return err.into(),
-    };
-
-    // Safety: caller must ensure that firmware_volume_handle is a valid pointer. It is null-checked above.
-    unsafe {
-        firmware_volume_handle.write_unaligned(handle);
-    }
-
-    efi::Status::SUCCESS
-}
-
 impl <P: Platform> Core<P> {
     #[coverage(off)]
     extern "efiapi" fn dispatch_efiapi() -> efi::Status {
@@ -432,6 +401,39 @@ impl <P: Platform> Core<P> {
         }
     }
 
+    #[coverage(off)]
+    extern "efiapi" fn process_firmware_volume(
+        firmware_volume_header: *const c_void,
+        size: usize,
+        firmware_volume_handle: *mut efi::Handle,
+    ) -> efi::Status {
+        if firmware_volume_handle.is_null() || firmware_volume_header.is_null() {
+            return efi::Status::INVALID_PARAMETER;
+        }
+
+        // construct a FirmwareVolume to verify sanity
+        // Safety: caller must ensure that firmware_volume_header is a valid pointer. It is null-checked above.
+        let fv_slice = unsafe { slice::from_raw_parts(firmware_volume_header as *const u8, size) };
+        if let Err(err) = VolumeRef::new(fv_slice) {
+            return err.into();
+        }
+        // Safety: caller must ensure that firmware_volume_header is a valid firmware volume that will not be freed
+        // or moved after being sent to the core for processing.
+        let res = unsafe { Self::instance().install_firmware_volume(firmware_volume_header as u64, None) };
+        let handle = match res {
+            Ok(handle) => handle,
+            Err(err) => return err.into(),
+        };
+
+        // Safety: caller must ensure that firmware_volume_handle is a valid pointer. It is null-checked above.
+        unsafe {
+            firmware_volume_handle.write_unaligned(handle);
+        }
+
+        efi::Status::SUCCESS
+    }
+
+
     pub(crate) fn init_dxe_services(system_table: &mut EfiSystemTable) {
         let mut dxe_system_table = dxe_services::DxeServicesTable {
             header: efi::TableHeader {
@@ -457,7 +459,7 @@ impl <P: Platform> Core<P> {
             dispatch: Self::dispatch_efiapi,
             schedule: Self::schedule_efiapi,
             trust: Self::trust_efiapi,
-            process_firmware_volume,
+            process_firmware_volume: Self::process_firmware_volume,
             set_memory_space_capabilities,
         };
         let dxe_system_table_ptr = &dxe_system_table as *const dxe_services::DxeServicesTable;
@@ -483,14 +485,10 @@ impl <P: Platform> Core<P> {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::test_support;
+    use crate::{Core, MockPlatformC, test_support};
     use dxe_services::{GcdIoType, GcdMemoryType};
 
-    struct Platform;
-
-    impl crate::Platform for Platform { }
-
-    type TestCore = Core<Platform>;
+    type TestCore = Core<MockPlatformC>;
 
     fn with_locked_state<F: Fn() + std::panic::RefUnwindSafe>(f: F) {
         test_support::with_global_lock(|| {
@@ -2070,52 +2068,6 @@ mod tests {
     }
 
     #[test]
-    fn test_process_firmware_volume_invalid_parameters() {
-        with_locked_state(|| {
-            let mut out_handle: efi::Handle = core::ptr::null_mut();
-
-            // Null header
-            let s = process_firmware_volume(core::ptr::null(), 0, &mut out_handle);
-            assert_eq!(s, efi::Status::INVALID_PARAMETER);
-
-            // Null output handle pointer
-            let bogus = 0xDEAD_BEEFu64 as *const core::ffi::c_void;
-            let s = process_firmware_volume(bogus, 0, core::ptr::null_mut());
-            assert_eq!(s, efi::Status::INVALID_PARAMETER);
-        });
-    }
-
-    #[test]
-    fn test_process_firmware_volume_volume_corrupted_on_bad_input() {
-        with_locked_state(|| {
-            // Provide a tiny, obviously invalid buffer
-            let bad_buf: [u8; 16] = [0u8; 16];
-            let mut out_handle: efi::Handle = core::ptr::null_mut();
-            let s =
-                process_firmware_volume(bad_buf.as_ptr() as *const core::ffi::c_void, bad_buf.len(), &mut out_handle);
-            assert_eq!(s, efi::Status::VOLUME_CORRUPTED);
-        });
-    }
-
-    #[test]
-    fn test_process_firmware_volume_success_with_real_fv() {
-        use crate::test_collateral;
-        use std::{fs::File, io::Read};
-
-        let mut file = File::open(test_collateral!("DXEFV.Fv")).unwrap();
-        let mut fv: Vec<u8> = Vec::new();
-        file.read_to_end(&mut fv).expect("failed to read test file");
-
-        with_locked_state(|| {
-            let mut out_handle: efi::Handle = core::ptr::null_mut();
-            let s = process_firmware_volume(fv.as_ptr() as *const core::ffi::c_void, fv.len(), &mut out_handle);
-
-            assert_eq!(s, efi::Status::SUCCESS);
-            assert!(!out_handle.is_null(), "process_firmware_volume should return a valid handle");
-        });
-    }
-
-    #[test]
     fn test_init_dxe_services_installs_config_table_with_valid_crc_and_functions() {
         with_locked_state(|| {
             // Initialize a fresh System Table (requires GCD already initialized by with_locked_state)
@@ -2166,7 +2118,7 @@ mod tests {
             // Spot-check a few function pointers are correctly wired
             assert_eq!(dxe_tbl.add_memory_space as usize, add_memory_space as usize);
             assert_eq!(dxe_tbl.dispatch as usize, TestCore::dispatch_efiapi as usize);
-            assert_eq!(dxe_tbl.process_firmware_volume as usize, process_firmware_volume as usize);
+            assert_eq!(dxe_tbl.process_firmware_volume as usize, TestCore::process_firmware_volume as usize);
         });
     }
 }

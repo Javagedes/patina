@@ -65,7 +65,7 @@ mod tpl_lock;
 #[coverage(off)]
 pub mod test_support;
 
-use core::{ffi::c_void, marker::PhantomData, ptr::{self, NonNull}, str::FromStr, sync::atomic::AtomicPtr};
+use core::{ffi::c_void, ptr::{self, NonNull}, str::FromStr, sync::atomic::AtomicPtr};
 
 use alloc::{boxed::Box, vec::Vec};
 use gcd::SpinLockedGcd;
@@ -91,7 +91,7 @@ use patina_internal_cpu::{cpu::EfiCpu, interrupts::Interrupts};
 use protocols::PROTOCOL_DB;
 use r_efi::efi;
 
-use crate::{config_tables::memory_attributes_table, dispatcher::DispatcherContext, tpl_lock::TplMutex};
+use crate::{config_tables::memory_attributes_table, dispatcher::DispatcherContext, fv::PrivateGlobalData, tpl_lock::TplMutex};
 
 #[doc(hidden)]
 #[macro_export]
@@ -146,24 +146,43 @@ impl Default for GicBases {
 
 static __SELF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
+
 pub trait Platform {
+    type Extractor: SectionExtractor;
     /// Informs the core that it should prioritize allocating 32-bit memory when
     /// not otherwise specified.
     ///
     /// This should only be used as a workaround in environments where address width
     /// bugs exist in uncontrollable dependent software. For example, when booting
     /// to an OS that puts any addresses from UEFI into a uint32.
-    const PRIORITIZE_32_BIT_MEMORY: bool = false;
+    fn prioritize_32_bit_memory() -> bool { false }
+
+    fn section_extractor() -> Self::Extractor;
 }
 
-struct UefiState {
-    dispatcher_context: TplMutex<DispatcherContext>,
+#[cfg(test)]
+mockall::mock! {
+    pub PlatformC {}
+
+    impl Platform for PlatformC {
+        type Extractor = patina_ffs_extractors::NullSectionExtractor;
+
+        fn prioritize_32_bit_memory() -> bool;
+
+        fn section_extractor() -> <MockPlatformC as Platform>::Extractor;
+    }
 }
 
-impl UefiState {
+struct UefiState<P: Platform> {
+    dispatcher_context: TplMutex<DispatcherContext<P::Extractor>>,
+    fv_data: TplMutex<PrivateGlobalData<P::Extractor>>
+}
+
+impl<P: Platform> UefiState<P> {
     const fn new() -> Self {
         Self {
             dispatcher_context: TplMutex::new(efi::TPL_NOTIFY, DispatcherContext::new(), "Dispatcher Context"),
+            fv_data: TplMutex::new(efi::TPL_NOTIFY, PrivateGlobalData::new(), "FvLock"),
         }
     }
 }
@@ -216,8 +235,7 @@ pub struct Core<P: Platform> {
     hob_list: HobList<'static>,
     components: Vec<Box<dyn Component>>,
     storage: Storage,
-    uefi_state: UefiState,
-    _memory_state: PhantomData<P>,
+    uefi_state: UefiState<P>,
 }
 
 unsafe impl <P: Platform> Sync for Core<P> {}
@@ -237,7 +255,6 @@ impl <P: Platform> Core<P> {
             components: Vec::new(),
             storage: Storage::new(),
             uefi_state: UefiState::new(),
-            _memory_state: core::marker::PhantomData,
         }
     }
 
@@ -266,7 +283,7 @@ impl <P: Platform> Core<P> {
     pub fn init_memory(&'static mut self, physical_hob_list: *const c_void) {
         log::info!("DXE Core Crate v{}", env!("CARGO_PKG_VERSION"));
 
-        GCD.prioritize_32_bit_memory(P::PRIORITIZE_32_BIT_MEMORY);
+        GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
 
         let mut cpu = EfiCpu::default();
         cpu.initialize().expect("Failed to initialize CPU!");
@@ -555,14 +572,11 @@ impl <P: Platform> Core<P> {
         self.parse_hobs();
         log::info!("Finished.");
 
-        if let Some(extractor) = self.storage.get_service::<dyn SectionExtractor>() {
-            log::debug!("Section Extractor service found, registering with FV and Dispatcher.");
-            self.register_section_extractor(extractor.clone());
-            fv::register_section_extractor(extractor);
-        }
+        self.uefi_state.dispatcher_context.lock().set_extractor(P::section_extractor());
+        self.uefi_state.fv_data.lock().set_extractor(P::section_extractor());
 
         log::info!("Parsing FVs from FV HOBs");
-        fv::parse_hob_fvs(&self.hob_list)?;
+        self.parse_hob_fvs(&self.hob_list)?;
         log::info!("Finished.");
 
         log::info!("Dispatching Drivers");
