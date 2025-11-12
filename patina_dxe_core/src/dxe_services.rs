@@ -19,7 +19,7 @@ use patina::pi::dxe_services;
 use r_efi::efi;
 
 use crate::{
-    Core, GCD, Platform, allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool}, config_tables, gcd, systemtables::EfiSystemTable
+    Core, CoreConfig, GCD, Platform, allocator::{EFI_RUNTIME_SERVICES_DATA_ALLOCATOR, core_allocate_pool}, config_tables, gcd, systemtables::EfiSystemTable
 };
 
 extern "efiapi" fn add_memory_space(
@@ -364,7 +364,7 @@ extern "efiapi" fn get_io_space_map(
     }
 }
 
-impl <P: Platform> Core<P> {
+impl <C: CoreConfig, P: Platform> Core<C, P> {
     #[coverage(off)]
     extern "efiapi" fn dispatch_efiapi() -> efi::Status {
         match Self::instance().dispatch() {
@@ -485,10 +485,8 @@ impl <P: Platform> Core<P> {
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::{Core, MockPlatformC, test_support};
+    use crate::{MockCore, test_support};
     use dxe_services::{GcdIoType, GcdMemoryType};
-
-    type TestCore = Core<MockPlatformC>;
 
     fn with_locked_state<F: Fn() + std::panic::RefUnwindSafe>(f: F) {
         test_support::with_global_lock(|| {
@@ -2081,7 +2079,7 @@ mod tests {
             assert_eq!(st.system_table().number_of_table_entries, 0);
 
             // Act: install the DXE Services table
-            TestCore::init_dxe_services(st);
+            MockCore::init_dxe_services(st);
 
             // After: one entry should exist and match DXE_SERVICES_TABLE_GUID
             let st_ref = st.system_table();
@@ -2117,8 +2115,8 @@ mod tests {
 
             // Spot-check a few function pointers are correctly wired
             assert_eq!(dxe_tbl.add_memory_space as usize, add_memory_space as usize);
-            assert_eq!(dxe_tbl.dispatch as usize, TestCore::dispatch_efiapi as usize);
-            assert_eq!(dxe_tbl.process_firmware_volume as usize, TestCore::process_firmware_volume as usize);
+            assert_eq!(dxe_tbl.dispatch as usize, MockCore::dispatch_efiapi as usize);
+            assert_eq!(dxe_tbl.process_firmware_volume as usize, MockCore::process_firmware_volume as usize);
         });
     }
 }

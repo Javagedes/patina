@@ -23,7 +23,7 @@ use patina_internal_device_path::concat_device_path_to_boxed_slice;
 use r_efi::efi;
 
 use crate::{
-    Core, Platform, allocator::core_allocate_pool, decompress::CoreExtractor, protocols::{PROTOCOL_DB, core_install_protocol_interface}
+    Core, CoreConfig, Platform, allocator::core_allocate_pool, decompress::CoreExtractor, protocols::{PROTOCOL_DB, core_install_protocol_interface}
 };
 
 struct PrivateFvbData {
@@ -59,7 +59,7 @@ impl <E: SectionExtractor> PrivateGlobalData<E> {
     }
 }
 
-impl <P: Platform> Core<P> {
+impl <C: CoreConfig, P: Platform> Core<C, P> {
     pub fn fvb_get_attributes(
         &self,
         this: NonNull<pi::protocols::firmware_volume_block::Protocol>,
@@ -882,7 +882,7 @@ pub fn device_path_bytes_for_fv_file(fv_handle: efi::Handle, file_name: efi::Gui
 #[coverage(off)]
 mod tests {
     use super::*;
-    use crate::{MockPlatformC, test_support};
+    use crate::{MockCore, test_support};
     use patina::pi::{
         BootMode,
         hob::{self, Hob, HobList},
@@ -903,8 +903,6 @@ mod tests {
     const LBA: u64 = 0;
     const SECTION_TYPE: ffs::section::EfiSectionType = 0;
     const SECTION_INSTANCE: usize = 0;
-
-    type TestCore = Core<MockPlatformC>;
 
     #[test]
     fn test_fv_init_core() {
@@ -970,7 +968,7 @@ mod tests {
             // Push the example HOBs onto the HOB list
             hoblist.push(Hob::FirmwareVolume2(&_firmware_volume2));
             hoblist.push(Hob::Handoff(&end_of_hob_list));
-            let core = TestCore::new();
+            let core = MockCore::new();
             core.parse_hob_fvs(&hoblist).unwrap();
             core.uefi_state.fv_data.lock().set_extractor(NullSectionExtractor{});
         })
@@ -1011,22 +1009,22 @@ mod tests {
 
             /* Create Firmware Interface, this will be used by the whole test module */
             let mut fv_interface = Box::from(pi::protocols::firmware_volume::Protocol {
-                get_volume_attributes: TestCore::fv_get_volume_attributes_efiapi,
-                set_volume_attributes: TestCore::fv_set_volume_attributes_efiapi,
-                read_file: TestCore::fv_read_file_efiapi,
-                read_section: TestCore::fv_read_section_efiapi,
-                write_file: TestCore::fv_write_file_efiapi,
-                get_next_file: TestCore::fv_get_next_file_efiapi,
+                get_volume_attributes: MockCore::fv_get_volume_attributes_efiapi,
+                set_volume_attributes: MockCore::fv_set_volume_attributes_efiapi,
+                read_file: MockCore::fv_read_file_efiapi,
+                read_section: MockCore::fv_read_section_efiapi,
+                write_file: MockCore::fv_write_file_efiapi,
+                get_next_file: MockCore::fv_get_next_file_efiapi,
                 key_size: size_of::<usize>() as u32,
                 parent_handle: match parent_handle {
                     Some(_handle) => _handle,
                     None => core::ptr::null_mut(),
                 },
-                get_info: TestCore::fv_get_info_efiapi,
-                set_info: TestCore::fv_set_info_efiapi,
+                get_info: MockCore::fv_get_info_efiapi,
+                set_info: MockCore::fv_set_info_efiapi,
             });
 
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
 
             let fv_ptr = fv_interface.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
@@ -1039,13 +1037,13 @@ mod tests {
 
             /* Build Firmware Volume Block Interface*/
             let mut fvb_interface = Box::from(pi::protocols::firmware_volume_block::Protocol {
-                get_attributes: TestCore::fvb_get_attributes_efiapi,
-                set_attributes: TestCore::fvb_set_attributes_efiapi,
-                get_physical_address: TestCore::fvb_get_physical_address_efiapi,
-                get_block_size: TestCore::fvb_get_block_size_efiapi,
-                read: TestCore::fvb_read_efiapi,
-                write: TestCore::fvb_write_efiapi,
-                erase_blocks: TestCore::fvb_erase_blocks_efiapi,
+                get_attributes: MockCore::fvb_get_attributes_efiapi,
+                set_attributes: MockCore::fvb_set_attributes_efiapi,
+                get_physical_address: MockCore::fvb_get_physical_address_efiapi,
+                get_block_size: MockCore::fvb_get_block_size_efiapi,
+                read: MockCore::fvb_read_efiapi,
+                write: MockCore::fvb_write_efiapi,
+                erase_blocks: MockCore::fvb_erase_blocks_efiapi,
                 parent_handle: match parent_handle {
                     Some(handle) => handle,
                     None => core::ptr::null_mut(),
@@ -1063,19 +1061,19 @@ mod tests {
 
             /* Instance 2 - Create a FV  interface with Bad physical address to handle Error cases. */
             let mut fv_interface3 = Box::from(pi::protocols::firmware_volume::Protocol {
-                get_volume_attributes: TestCore::fv_get_volume_attributes_efiapi,
-                set_volume_attributes: TestCore::fv_set_volume_attributes_efiapi,
-                read_file: TestCore::fv_read_file_efiapi,
-                read_section: TestCore::fv_read_section_efiapi,
-                write_file: TestCore::fv_write_file_efiapi,
-                get_next_file: TestCore::fv_get_next_file_efiapi,
+                get_volume_attributes: MockCore::fv_get_volume_attributes_efiapi,
+                set_volume_attributes: MockCore::fv_set_volume_attributes_efiapi,
+                read_file: MockCore::fv_read_file_efiapi,
+                read_section: MockCore::fv_read_section_efiapi,
+                write_file: MockCore::fv_write_file_efiapi,
+                get_next_file: MockCore::fv_get_next_file_efiapi,
                 key_size: size_of::<usize>() as u32,
                 parent_handle: match parent_handle {
                     Some(handle) => handle,
                     None => core::ptr::null_mut(),
                 },
-                get_info: TestCore::fv_get_info_efiapi,
-                set_info: TestCore::fv_set_info_efiapi,
+                get_info: MockCore::fv_get_info_efiapi,
+                set_info: MockCore::fv_set_info_efiapi,
             });
 
             let fv_ptr3 = fv_interface3.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
@@ -1090,30 +1088,30 @@ mod tests {
 
             /* Create an interface with No physical address and no private data - cover Error Conditions */
             let fv_interface_no_data = pi::protocols::firmware_volume::Protocol {
-                get_volume_attributes: TestCore::fv_get_volume_attributes_efiapi,
-                set_volume_attributes: TestCore::fv_set_volume_attributes_efiapi,
-                read_file: TestCore::fv_read_file_efiapi,
-                read_section: TestCore::fv_read_section_efiapi,
-                write_file: TestCore::fv_write_file_efiapi,
-                get_next_file: TestCore::fv_get_next_file_efiapi,
+                get_volume_attributes: MockCore::fv_get_volume_attributes_efiapi,
+                set_volume_attributes: MockCore::fv_set_volume_attributes_efiapi,
+                read_file: MockCore::fv_read_file_efiapi,
+                read_section: MockCore::fv_read_section_efiapi,
+                write_file: MockCore::fv_write_file_efiapi,
+                get_next_file: MockCore::fv_get_next_file_efiapi,
                 key_size: size_of::<usize>() as u32,
                 parent_handle: core::ptr::null_mut(),
 
-                get_info: TestCore::fv_get_info_efiapi,
-                set_info: TestCore::fv_set_info_efiapi,
+                get_info: MockCore::fv_get_info_efiapi,
+                set_info: MockCore::fv_set_info_efiapi,
             };
 
             let fv_ptr_no_data = &fv_interface_no_data as *const pi::protocols::firmware_volume::Protocol;
 
             /* Create a Firmware Volume Block Interface with Invalid Physical Address */
             let mut fvb_intf_invalid = Box::from(pi::protocols::firmware_volume_block::Protocol {
-                get_attributes: TestCore::fvb_get_attributes_efiapi,
-                set_attributes: TestCore::fvb_set_attributes_efiapi,
-                get_physical_address: TestCore::fvb_get_physical_address_efiapi,
-                get_block_size: TestCore::fvb_get_block_size_efiapi,
-                read: TestCore::fvb_read_efiapi,
-                write: TestCore::fvb_write_efiapi,
-                erase_blocks: TestCore::fvb_erase_blocks_efiapi,
+                get_attributes: MockCore::fvb_get_attributes_efiapi,
+                set_attributes: MockCore::fvb_set_attributes_efiapi,
+                get_physical_address: MockCore::fvb_get_physical_address_efiapi,
+                get_block_size: MockCore::fvb_get_block_size_efiapi,
+                read: MockCore::fvb_read_efiapi,
+                write: MockCore::fvb_write_efiapi,
+                erase_blocks: MockCore::fvb_erase_blocks_efiapi,
                 parent_handle: match parent_handle {
                     Some(handle) => handle,
                     None => core::ptr::null_mut(),
@@ -1134,13 +1132,13 @@ mod tests {
 
             /* Create a Firmware Volume Block Interface without Physical address populated  */
             let mut fvb_intf_data_n = Box::from(pi::protocols::firmware_volume_block::Protocol {
-                get_attributes: TestCore::fvb_get_attributes_efiapi,
-                set_attributes: TestCore::fvb_set_attributes_efiapi,
-                get_physical_address: TestCore::fvb_get_physical_address_efiapi,
-                get_block_size: TestCore::fvb_get_block_size_efiapi,
-                read: TestCore::fvb_read_efiapi,
-                write: TestCore::fvb_write_efiapi,
-                erase_blocks: TestCore::fvb_erase_blocks_efiapi,
+                get_attributes: MockCore::fvb_get_attributes_efiapi,
+                set_attributes: MockCore::fvb_set_attributes_efiapi,
+                get_physical_address: MockCore::fvb_get_physical_address_efiapi,
+                get_block_size: MockCore::fvb_get_block_size_efiapi,
+                read: MockCore::fvb_read_efiapi,
+                write: MockCore::fvb_write_efiapi,
+                erase_blocks: MockCore::fvb_erase_blocks_efiapi,
                 parent_handle: match parent_handle {
                     Some(handle) => handle,
                     None => core::ptr::null_mut(),
@@ -1153,32 +1151,32 @@ mod tests {
             // functions.
             unsafe {
                 let fv_test_set_info = || {
-                    TestCore::fv_set_info_efiapi(ptr::null(), ptr::null(), BUFFER_SIZE_EMPTY, ptr::null());
+                    MockCore::fv_set_info_efiapi(ptr::null(), ptr::null(), BUFFER_SIZE_EMPTY, ptr::null());
                 };
 
                 let fv_test_get_info = || {
-                    TestCore::fv_get_info_efiapi(ptr::null(), ptr::null(), ptr::null_mut(), ptr::null_mut());
+                    MockCore::fv_get_info_efiapi(ptr::null(), ptr::null(), ptr::null_mut(), ptr::null_mut());
                 };
 
                 let fv_test_set_volume_attributes = || {
                     /* Cover the NULL Case */
-                    TestCore::fv_set_volume_attributes_efiapi(ptr::null(), fv_attributes);
+                    MockCore::fv_set_volume_attributes_efiapi(ptr::null(), fv_attributes);
 
                     /* Non Null Case*/
                 };
 
                 let fv_test_get_volume_attributes = || {
                     /* Cover the NULL Case, User Passing Invalid Parameter Case  */
-                    TestCore::fv_get_volume_attributes_efiapi(fv_ptr1, std::ptr::null_mut());
+                    MockCore::fv_get_volume_attributes_efiapi(fv_ptr1, std::ptr::null_mut());
 
                     /* Handle bad firmware volume data - return efi::Status::NOT_FOUND */
-                    TestCore::fv_get_volume_attributes_efiapi(fv_ptr_no_data, fv_attributes);
+                    MockCore::fv_get_volume_attributes_efiapi(fv_ptr_no_data, fv_attributes);
 
                     /* Handle Invalid Physical address case */
-                    TestCore::fv_get_volume_attributes_efiapi(fv_ptr3_const, fv_attributes);
+                    MockCore::fv_get_volume_attributes_efiapi(fv_ptr3_const, fv_attributes);
 
                     /* Non Null Case, success case */
-                    TestCore::fv_get_volume_attributes_efiapi(fv_ptr1, fv_attributes);
+                    MockCore::fv_get_volume_attributes_efiapi(fv_ptr1, fv_attributes);
                 };
 
                 let fv_test_fvb_read = || {
@@ -1194,13 +1192,13 @@ mod tests {
                         panic!("Memory allocation failed!");
                     }
                     /* Handle various cases for different conditions to hit */
-                    TestCore::fvb_read_efiapi(fvb_ptr_mut_prot, LBA, 0, std::ptr::null_mut(), std::ptr::null_mut());
-                    TestCore::fvb_read_efiapi(fvb_ptr_mut_prot, LBA, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_read_efiapi(fvb_ptr_mut_prot, 0xfffffffff, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_read_efiapi(fvb_intf_invalid_mutpro, LBA, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_read_efiapi(fvb_ptr_mut_prot, u64::MAX, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_read_efiapi(fvb_ptr_mut_prot, 0x22299222, 0x999999, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_read_efiapi(fvb_intf_data_n_mut, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_ptr_mut_prot, LBA, 0, std::ptr::null_mut(), std::ptr::null_mut());
+                    MockCore::fvb_read_efiapi(fvb_ptr_mut_prot, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_ptr_mut_prot, 0xfffffffff, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_intf_invalid_mutpro, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_ptr_mut_prot, u64::MAX, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_ptr_mut_prot, 0x22299222, 0x999999, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_read_efiapi(fvb_intf_data_n_mut, LBA, 0, buffer_valid_size3, buffer_valid3);
 
                     /* Free Memory */
                     dealloc(buffer_valid3 as *mut u8, layout3);
@@ -1225,37 +1223,37 @@ mod tests {
                     let num_buffer_empty_ref: *mut usize = &mut num_buffer_empty;
 
                     /* Handle the Null Case */
-                    TestCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, LBA, std::ptr::null_mut(), std::ptr::null_mut());
-                    TestCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, LBA, buffer_valid_size3, buffer_valid_size3);
-                    TestCore::fvb_get_block_size_efiapi(fvb_intf_invalid_mutpro, LBA, buffer_valid_size3, buffer_valid_size3);
-                    TestCore::fvb_get_block_size_efiapi(fvb_intf_data_n_mut, LBA, buffer_valid_size3, buffer_valid_size3);
-                    TestCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, u64::MAX, buffer_valid_size3, buffer_valid_size3);
-                    TestCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, 222222, buffer_size_random_ref, num_buffer_empty_ref);
+                    MockCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, LBA, std::ptr::null_mut(), std::ptr::null_mut());
+                    MockCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, LBA, buffer_valid_size3, buffer_valid_size3);
+                    MockCore::fvb_get_block_size_efiapi(fvb_intf_invalid_mutpro, LBA, buffer_valid_size3, buffer_valid_size3);
+                    MockCore::fvb_get_block_size_efiapi(fvb_intf_data_n_mut, LBA, buffer_valid_size3, buffer_valid_size3);
+                    MockCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, u64::MAX, buffer_valid_size3, buffer_valid_size3);
+                    MockCore::fvb_get_block_size_efiapi(fvb_ptr_mut_prot, 222222, buffer_size_random_ref, num_buffer_empty_ref);
                     /* Free Memory */
                     dealloc(buffer_valid3 as *mut u8, layout3);
                 };
 
                 let fvb_test_erase_block = || {
-                    TestCore::fvb_erase_blocks_efiapi(fvb_ptr_mut_prot);
+                    MockCore::fvb_erase_blocks_efiapi(fvb_ptr_mut_prot);
                 };
 
                 let fvb_test_get_physical_address = || {
                     /* Handling Not Found Case */
                     let mut p_address: efi::PhysicalAddress = 0x12345;
 
-                    TestCore::fvb_get_physical_address_efiapi(fvb_intf_data_n_mut, &mut p_address as *mut u64);
-                    TestCore::fvb_get_physical_address_efiapi(fvb_intf_invalid_mutpro, &mut p_address as *mut u64);
-                    TestCore::fvb_get_physical_address_efiapi(fvb_ptr_mut_prot, &mut p_address as *mut u64);
-                    TestCore::fvb_get_physical_address_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
+                    MockCore::fvb_get_physical_address_efiapi(fvb_intf_data_n_mut, &mut p_address as *mut u64);
+                    MockCore::fvb_get_physical_address_efiapi(fvb_intf_invalid_mutpro, &mut p_address as *mut u64);
+                    MockCore::fvb_get_physical_address_efiapi(fvb_ptr_mut_prot, &mut p_address as *mut u64);
+                    MockCore::fvb_get_physical_address_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
                 };
                 let fvb_test_write_file = || {
                     let number_of_files: u32 = 0;
                     let write_policy: pi::protocols::firmware_volume::EfiFvWritePolicy = 0;
-                    TestCore::fv_write_file_efiapi(fv_ptr1, number_of_files, write_policy, std::ptr::null_mut());
+                    MockCore::fv_write_file_efiapi(fv_ptr1, number_of_files, write_policy, std::ptr::null_mut());
                 };
 
                 let fvb_test_set_attributes = || {
-                    TestCore::fvb_set_attributes_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
+                    MockCore::fvb_set_attributes_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
                 };
 
                 let fvb_test_write = || {
@@ -1268,10 +1266,10 @@ mod tests {
                         panic!("Memory allocation failed!");
                     }
 
-                    TestCore::fvb_write_efiapi(fvb_ptr_mut_prot, LBA, 0, std::ptr::null_mut(), std::ptr::null_mut());
-                    TestCore::fvb_write_efiapi(fvb_ptr_mut_prot, LBA, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_write_efiapi(fvb_intf_invalid_mutpro, LBA, 0, buffer_valid_size3, buffer_valid3);
-                    TestCore::fvb_write_efiapi(fvb_intf_data_n_mut, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_write_efiapi(fvb_ptr_mut_prot, LBA, 0, std::ptr::null_mut(), std::ptr::null_mut());
+                    MockCore::fvb_write_efiapi(fvb_ptr_mut_prot, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_write_efiapi(fvb_intf_invalid_mutpro, LBA, 0, buffer_valid_size3, buffer_valid3);
+                    MockCore::fvb_write_efiapi(fvb_intf_data_n_mut, LBA, 0, buffer_valid_size3, buffer_valid3);
                     /* Free Memory */
                     dealloc(buffer_valid3 as *mut u8, layout3);
                 };
@@ -1280,10 +1278,10 @@ mod tests {
                     let mut fvb_attributes: fvb::attributes::EfiFvbAttributes2 = 0x123456;
                     let fvb_attributes_ref: *mut fvb::attributes::EfiFvbAttributes2 = &mut fvb_attributes;
 
-                    TestCore::fvb_get_attributes_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
-                    TestCore::fvb_get_attributes_efiapi(fvb_ptr_mut_prot, fvb_attributes_ref);
-                    TestCore::fvb_get_attributes_efiapi(fvb_intf_invalid_mutpro, fvb_attributes_ref);
-                    TestCore::fvb_get_attributes_efiapi(fvb_intf_data_n_mut, fvb_attributes_ref);
+                    MockCore::fvb_get_attributes_efiapi(fvb_ptr_mut_prot, std::ptr::null_mut());
+                    MockCore::fvb_get_attributes_efiapi(fvb_ptr_mut_prot, fvb_attributes_ref);
+                    MockCore::fvb_get_attributes_efiapi(fvb_intf_invalid_mutpro, fvb_attributes_ref);
+                    MockCore::fvb_get_attributes_efiapi(fvb_intf_data_n_mut, fvb_attributes_ref);
                 };
 
                 let fvb_test_get_next_file = || {
@@ -1302,7 +1300,7 @@ mod tests {
                     if buffer_valid3.is_null() {
                         panic!("Memory allocation failed!");
                     }
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         ptr::null(),
                         std::ptr::null_mut(),
                         file_type_read_ref,
@@ -1310,7 +1308,7 @@ mod tests {
                         file_attributes,
                         buffer_valid_size3,
                     );
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         ptr::null(),
                         buffer_valid3,
                         file_type_read_ref,
@@ -1318,7 +1316,7 @@ mod tests {
                         file_attributes,
                         buffer_valid_size3,
                     );
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         fv_ptr1,
                         buffer_valid3,
                         file_type_read_ref,
@@ -1326,7 +1324,7 @@ mod tests {
                         file_attributes,
                         buffer_valid_size3,
                     );
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         fv_ptr3_const,
                         buffer_valid3,
                         file_type_read_ref,
@@ -1334,7 +1332,7 @@ mod tests {
                         file_attributes,
                         buffer_valid_size3,
                     );
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         fv_ptr_no_data,
                         buffer_valid3,
                         file_type_read_ref,
@@ -1346,7 +1344,7 @@ mod tests {
                     let mut file_type_read: fv::EfiFvFileType = ffs::file::raw::r#type::FFS_MIN;
                     let file_type_read_ref1: *mut fv::EfiFvFileType = &mut file_type_read;
 
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         fv_ptr1,
                         buffer_valid3,
                         file_type_read_ref1,
@@ -1355,7 +1353,7 @@ mod tests {
                         buffer_valid_size3,
                     );
                     /* Null BUffer Case*/
-                    TestCore::fv_get_next_file_efiapi(
+                    MockCore::fv_get_next_file_efiapi(
                         fv_ptr1,
                         std::ptr::null_mut(),
                         file_type_read_ref,
@@ -1391,7 +1389,7 @@ mod tests {
                     let name_guid2: *mut efi::Guid = &mut gd2;
 
                     /* Cover the NULL Case, User Passing Invalid Parameter Case  */
-                    TestCore::fv_read_section_efiapi(
+                    MockCore::fv_read_section_efiapi(
                         ptr::null(),
                         ptr::null(),
                         SECTION_TYPE,
@@ -1401,7 +1399,7 @@ mod tests {
                         std::ptr::null_mut(),
                     );
 
-                    TestCore::fv_read_section_efiapi(
+                    MockCore::fv_read_section_efiapi(
                         fv_ptr1,
                         guid_ref_invalid_ref,
                         6,
@@ -1422,7 +1420,7 @@ mod tests {
                        auth_valid_p,
                     );*/
 
-                    TestCore::fv_read_section_efiapi(
+                    MockCore::fv_read_section_efiapi(
                         fv_ptr1,
                         name_guid2,
                         6,
@@ -1433,7 +1431,7 @@ mod tests {
                     );
 
                     /* Handle Invalid Physical address case */
-                    TestCore::fv_read_section_efiapi(
+                    MockCore::fv_read_section_efiapi(
                         fv_ptr3_const,
                         guid_ref_invalid_ref,
                         1,
@@ -1444,7 +1442,7 @@ mod tests {
                     );
 
                     /* Handle bad firmware volume data - return efi::Status::NOT_FOUND */
-                    TestCore::fv_read_section_efiapi(
+                    MockCore::fv_read_section_efiapi(
                         fv_ptr_no_data,
                         guid_ref_invalid_ref,
                         1,
@@ -1472,7 +1470,7 @@ mod tests {
                         panic!("Memory allocation failed!");
                     }
 
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         ptr::null(),
                         ptr::null(),
                         &mut buffer_valid3 as *mut *mut c_void,
@@ -1482,7 +1480,7 @@ mod tests {
                         std::ptr::null_mut(),
                     );
 
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         fv_ptr1,
                         guid_ref_invalid_ref,
                         &mut buffer_valid3 as *mut *mut c_void,
@@ -1491,7 +1489,7 @@ mod tests {
                         file_attributes,
                         auth_valid_p,
                     );
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         fv_ptr1,
                         guid_valid_ref,
                         &mut buffer_valid3 as *mut *mut c_void,
@@ -1500,7 +1498,7 @@ mod tests {
                         file_attributes,
                         auth_valid_p,
                     );
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         fv_ptr3_const,
                         guid_valid_ref,
                         &mut buffer_valid3 as *mut *mut c_void,
@@ -1509,7 +1507,7 @@ mod tests {
                         file_attributes,
                         auth_valid_p,
                     );
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         fv_ptr_no_data,
                         guid_valid_ref,
                         &mut buffer_valid3 as *mut *mut c_void,
@@ -1518,7 +1516,7 @@ mod tests {
                         file_attributes,
                         auth_valid_p,
                     );
-                    TestCore::fv_read_file_efiapi(
+                    MockCore::fv_read_file_efiapi(
                         fv_ptr1,
                         guid_valid_ref,
                         std::ptr::null_mut(),
@@ -1568,24 +1566,24 @@ mod tests {
              * In case other functions/modules are written, clear the private global data again.
              */
             // Safety: global lock ensures exclusive access to the private data.
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             CORE.uefi_state.fv_data.lock().section_extractor.set_extractor(NullSectionExtractor{});
 
             let mut fv_interface = Box::from(pi::protocols::firmware_volume::Protocol {
-                get_volume_attributes: TestCore::fv_get_volume_attributes_efiapi,
-                set_volume_attributes: TestCore::fv_set_volume_attributes_efiapi,
-                read_file: TestCore::fv_read_file_efiapi,
-                read_section: TestCore::fv_read_section_efiapi,
-                write_file: TestCore::fv_write_file_efiapi,
-                get_next_file: TestCore::fv_get_next_file_efiapi,
+                get_volume_attributes: MockCore::fv_get_volume_attributes_efiapi,
+                set_volume_attributes: MockCore::fv_set_volume_attributes_efiapi,
+                read_file: MockCore::fv_read_file_efiapi,
+                read_section: MockCore::fv_read_section_efiapi,
+                write_file: MockCore::fv_write_file_efiapi,
+                get_next_file: MockCore::fv_get_next_file_efiapi,
                 key_size: size_of::<usize>() as u32,
                 parent_handle: match parent_handle {
                     Some(handle) => handle,
                     None => core::ptr::null_mut(),
                 },
-                get_info: TestCore::fv_get_info_efiapi,
-                set_info: TestCore::fv_set_info_efiapi,
+                get_info: MockCore::fv_get_info_efiapi,
+                set_info: MockCore::fv_set_info_efiapi,
             });
 
             let fv_ptr = fv_interface.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
@@ -1620,7 +1618,7 @@ mod tests {
                 );
                 let name_guid3: *mut efi::Guid = &mut guid1;
 
-                TestCore::fv_read_section_efiapi(
+                MockCore::fv_read_section_efiapi(
                     fv_ptr1,
                     name_guid3,
                     6,

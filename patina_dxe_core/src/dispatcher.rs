@@ -32,7 +32,7 @@ use r_efi::efi;
 use mu_rust_helpers::guid::CALLER_ID;
 
 use crate::{
-    Core, Platform, decompress::CoreExtractor, events::EVENT_DB, fv::device_path_bytes_for_fv_file, image::{core_load_image, core_start_image}, protocol_db::DXE_CORE_HANDLE, protocols::PROTOCOL_DB,
+    Core, CoreConfig, Platform, decompress::CoreExtractor, events::EVENT_DB, fv::device_path_bytes_for_fv_file, image::{core_load_image, core_start_image}, protocol_db::DXE_CORE_HANDLE, protocols::PROTOCOL_DB
 };
 
 // Default Dependency expression per PI spec v1.2 Vol 2 section 10.9.
@@ -155,7 +155,7 @@ impl <E: SectionExtractor> DispatcherContext<E> {
     }
 }
 
-impl <P: Platform> Core<P> {
+impl <C: CoreConfig, P: Platform> Core<C, P> {
     pub(crate)fn dispatch_uefi_drivers(&self) -> Result<bool, EfiError> {
         let dispatcher_context = &self.uefi_state.dispatcher_context;
 
@@ -536,9 +536,7 @@ mod tests {
     use uuid::uuid;
 
     use super::*;
-    use crate::{MockPlatformC, test_collateral, test_support};
-
-    type TestCore = Core<MockPlatformC>;
+    use crate::{MockCore, test_collateral, test_support};
 
     // Simple logger for log crate to dump stuff in tests
     struct SimpleLogger;
@@ -646,8 +644,8 @@ mod tests {
     fn test_init_dispatcher() {
         set_logger();
         with_locked_state(|| {
-            TestCore::init_dispatcher();
-            TestCore::new().uefi_state.dispatcher_context.lock().set_extractor(patina_ffs_extractors::NullSectionExtractor{});
+            MockCore::init_dispatcher();
+            MockCore::new().uefi_state.dispatcher_context.lock().set_extractor(patina_ffs_extractors::NullSectionExtractor{});
         });
     }
 
@@ -661,7 +659,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
     
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
@@ -681,7 +679,7 @@ mod tests {
     fn test_add_fv_handle_with_invalid_handle() {
         set_logger();
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             let result = std::panic::catch_unwind(|| {
                 CORE.add_fv_handles(vec![std::ptr::null_mut::<c_void>()]).expect("Failed to add FV handle");
@@ -700,7 +698,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
 
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
@@ -731,7 +729,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
 
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
@@ -762,7 +760,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let fv_phys_addr = fv_raw.expose_provenance() as u64;
@@ -795,7 +793,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
@@ -819,7 +817,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
@@ -843,12 +841,12 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let _ =
                 unsafe { CORE.install_firmware_volume(fv_raw.expose_provenance() as u64, None).unwrap() };
-            TestCore::core_fw_vol_event_protocol_notify(std::ptr::null_mut::<c_void>(), std::ptr::null_mut::<c_void>());
+            MockCore::core_fw_vol_event_protocol_notify(std::ptr::null_mut::<c_void>(), std::ptr::null_mut::<c_void>());
 
             const DRIVERS_IN_DXEFV: usize = 130;
             assert_eq!(CORE.uefi_state.dispatcher_context.lock().pending_drivers.len(), DRIVERS_IN_DXEFV);
@@ -861,7 +859,7 @@ mod tests {
     fn test_dispatch_when_already_dispatching() {
         set_logger();
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             CORE.uefi_state.dispatcher_context.lock().executing = true;
             assert!(CORE.dispatch().is_err_and(|e| e == EfiError::AlreadyStarted));
@@ -872,7 +870,7 @@ mod tests {
     fn test_dispatch_with_nothing_to_dispatch() {
         set_logger();
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             assert!(CORE.dispatch().is_err_and(|e| e == EfiError::NotFound));
         })
@@ -888,7 +886,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
@@ -913,7 +911,7 @@ mod tests {
         let fv_raw = Box::into_raw(fv);
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Safety: fv is leaked to ensure it is not freed and remains valid for the duration of the program.
             let handle =
@@ -943,7 +941,7 @@ mod tests {
         file.read_to_end(&mut fv).expect("failed to read test file");
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Install the FV to obtain a real handle
             let handle = unsafe { CORE.install_firmware_volume(fv.as_ptr() as u64, None).unwrap() };
@@ -958,7 +956,7 @@ mod tests {
     #[test]
     fn test_trust_not_found_without_pending_drivers() {
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
             // Any GUID and handle are fine; there are no pending drivers in this harness
             let guid = efi::Guid::from_fields(0, 0, 0, 0, 0, &[1, 2, 3, 4, 5, 6]);
@@ -976,7 +974,7 @@ mod tests {
         file.read_to_end(&mut fv).expect("failed to read test file");
 
         with_locked_state(|| {
-            static CORE: TestCore = TestCore::new();
+            static CORE: MockCore = MockCore::new();
             CORE.set_instance();
 
             static SECURITY_CALL_EXECUTED: AtomicBool = AtomicBool::new(false);

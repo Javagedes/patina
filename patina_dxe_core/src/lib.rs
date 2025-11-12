@@ -73,7 +73,7 @@ use memory_manager::CoreMemoryManager;
 use mu_rust_helpers::{function, guid::CALLER_ID};
 use patina::{
     boot_services::StandardBootServices,
-    component::{Component, IntoComponent, Storage, service::IntoService},
+    component::{IntoComponent, Storage, service::IntoService},
     error::{self, Result},
     performance::{
         logging::{perf_function_begin, perf_function_end},
@@ -146,8 +146,45 @@ impl Default for GicBases {
 
 static __SELF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
+pub struct Component;
+pub struct Config;
+pub struct Service;
 
-pub trait Platform {
+pub struct Add<'a, O> {
+    storage: &'a mut Storage,
+    components: &'a mut Vec<Box<dyn patina::component::Component>>,
+    _marker: core::marker::PhantomData<O>,
+}
+
+impl Add<'_, Component> {
+    pub fn component<I>(&mut self, component: impl IntoComponent<I>) {
+        let mut component = component.into_component();
+        component.initialize(&mut self.storage);
+        self.components.push(component);
+    }
+}
+
+impl Add<'_, Config> {
+    pub fn config<T: Default + 'static>(&mut self, config: T) {
+        self.storage.add_config(config);
+    }
+}
+
+impl Add<'_, Service> {
+    pub fn service(&mut self, service: impl IntoService + 'static) {
+        self.storage.add_service(service);
+    }
+}
+
+#[cfg_attr(test, mockall::automock)]
+pub trait Platform: Sized {
+    fn components<'a>(hob_list: *const c_void, add: Add<'a, Component>);
+    fn configs<'a>(add: Add<'a, Config>);
+    fn services<'a>(add: Add<'a, Service>);
+}
+
+#[cfg_attr(test, mockall::automock(type Extractor = patina_ffs_extractors::NullSectionExtractor;))]
+pub trait CoreConfig {
     type Extractor: SectionExtractor;
     /// Informs the core that it should prioritize allocating 32-bit memory when
     /// not otherwise specified.
@@ -161,24 +198,14 @@ pub trait Platform {
 }
 
 #[cfg(test)]
-mockall::mock! {
-    pub PlatformC {}
+type MockCore = Core<MockCoreConfig, MockPlatform>;
 
-    impl Platform for PlatformC {
-        type Extractor = patina_ffs_extractors::NullSectionExtractor;
-
-        fn prioritize_32_bit_memory() -> bool;
-
-        fn section_extractor() -> <MockPlatformC as Platform>::Extractor;
-    }
+struct UefiState<C: CoreConfig> {
+    dispatcher_context: TplMutex<DispatcherContext<C::Extractor>>,
+    fv_data: TplMutex<PrivateGlobalData<C::Extractor>>
 }
 
-struct UefiState<P: Platform> {
-    dispatcher_context: TplMutex<DispatcherContext<P::Extractor>>,
-    fv_data: TplMutex<PrivateGlobalData<P::Extractor>>
-}
-
-impl<P: Platform> UefiState<P> {
+impl<C: CoreConfig> UefiState<C> {
     const fn new() -> Self {
         Self {
             dispatcher_context: TplMutex::new(efi::TPL_NOTIFY, DispatcherContext::new(), "Dispatcher Context"),
@@ -230,23 +257,24 @@ impl<P: Platform> UefiState<P> {
 ///   .start()
 ///   .unwrap();
 /// ```
-pub struct Core<P: Platform> {
+pub struct Core<C: CoreConfig, P: Platform> {
     physical_hob_list: *const c_void,
     hob_list: HobList<'static>,
-    components: Vec<Box<dyn Component>>,
+    components: Vec<Box<dyn patina::component::Component>>,
     storage: Storage,
-    uefi_state: UefiState<P>,
+    uefi_state: UefiState<C>,
+    _marker: core::marker::PhantomData<P>,
 }
 
-unsafe impl <P: Platform> Sync for Core<P> {}
+unsafe impl <C: CoreConfig, P: Platform> Sync for Core<C, P> {}
 
-impl <P: Platform> Default for Core<P> {
+impl <C: CoreConfig, P: Platform> Default for Core<C, P> {
     fn default() -> Self {
         Core::new()
     }
 }
 
-impl <P: Platform> Core<P> {
+impl <C: CoreConfig, P: Platform> Core<C, P> {
     /// Creates a new instance of the Core.
     pub const fn new() -> Self {
         Self {
@@ -255,11 +283,12 @@ impl <P: Platform> Core<P> {
             components: Vec::new(),
             storage: Storage::new(),
             uefi_state: UefiState::new(),
+            _marker: core::marker::PhantomData,
         }
     }
 
     /// Sets the singleton instance of the Core.
-    fn set_instance(&'static self) {
+    fn set_instance(&self) {
         let ptr = NonNull::from(self).cast::<u8>().as_ptr();
         __SELF.store(ptr, core::sync::atomic::Ordering::SeqCst);
     }
@@ -279,11 +308,45 @@ impl <P: Platform> Core<P> {
         }
     }
 
+    pub fn entry_point(&'static mut self, physical_hob_list: *const c_void) -> ! {
+        self.init_memory(physical_hob_list);
+
+        P::components(self.physical_hob_list, Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _marker: core::marker::PhantomData,
+        });
+
+        P::configs(Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _marker: core::marker::PhantomData,
+        });
+
+        P::services(Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _marker: core::marker::PhantomData,
+        });
+    
+        if let Err(err) = self.start() {
+            log::error!("DXE Core failed to start: {err:?}");
+        }
+
+        loop {
+            call_bds();
+            log::info!("Returned from BDS phase. Re-dispatching.");
+            if let Err(err) = self.core_dispatcher() {
+                log::error!("DXE Core failed to start: {err:?}");
+            }
+        }
+    }
+
     /// Initializes the core with the given configuration, including GCD initialization, enabling allocations.
-    pub fn init_memory(&'static mut self, physical_hob_list: *const c_void) {
+    fn init_memory(&mut self, physical_hob_list: *const c_void) {
         log::info!("DXE Core Crate v{}", env!("CARGO_PKG_VERSION"));
 
-        GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
+        GCD.prioritize_32_bit_memory(C::prioritize_32_bit_memory());
 
         let mut cpu = EfiCpu::default();
         cpu.initialize().expect("Failed to initialize CPU!");
@@ -337,31 +400,10 @@ impl <P: Platform> Core<P> {
         self.set_instance();
     }
 
-    /// Directly registers an instantiated service with the core, making it available immediately.
-    #[inline(always)]
-    pub fn with_service(&'static mut self, service: impl IntoService + 'static) -> &'static mut Self {
-        self.storage.add_service(service);
-        self
-    }
-
-    /// Registers a component with the core, that will be dispatched during the driver execution phase.
-    #[inline(always)]
-    pub fn with_component<I>(&'static mut self, component: impl IntoComponent<I>) -> &'static mut Self {
-        self.insert_component(self.components.len(), component.into_component());
-        self
-    }
-
     /// Inserts a component at the given index. If no index is provided, the component is added to the end of the list.
-    fn insert_component(&mut self, idx: usize, mut component: Box<dyn Component>) {
+    fn insert_component(&mut self, idx: usize, mut component: Box<dyn patina::component::Component>) {
         component.initialize(&mut self.storage);
         self.components.insert(idx, component);
-    }
-
-    /// Adds a configuration value to the Core's storage. All configuration is locked by default. If a component is
-    /// present that requires a mutable configuration, it will automatically be unlocked.
-    pub fn with_config<C: Default + 'static>(&'static mut self, config: C) -> &'static mut Self {
-        self.storage.add_config(config);
-        self
     }
 
     /// Parses the HOB list producing a `Hob\<T\>` struct for each guided HOB found with a registered parser.
@@ -559,7 +601,7 @@ impl <P: Platform> Core<P> {
     }
 
     /// Starts the core, dispatching all drivers.
-    pub fn start(&'static mut self) -> Result<()> {
+    fn start(&mut self) -> Result<()> {
         log::info!("Registering default components");
         self.add_core_components();
         log::info!("Finished.");
@@ -572,8 +614,8 @@ impl <P: Platform> Core<P> {
         self.parse_hobs();
         log::info!("Finished.");
 
-        self.uefi_state.dispatcher_context.lock().set_extractor(P::section_extractor());
-        self.uefi_state.fv_data.lock().set_extractor(P::section_extractor());
+        self.uefi_state.dispatcher_context.lock().set_extractor(C::section_extractor());
+        self.uefi_state.fv_data.lock().set_extractor(C::section_extractor());
 
         log::info!("Parsing FVs from FV HOBs");
         self.parse_hob_fvs(&self.hob_list)?;
@@ -591,7 +633,7 @@ impl <P: Platform> Core<P> {
 
         self.display_discovered_not_dispatched();
 
-        call_bds();
+        
 
         log::info!("Finished");
         Ok(())
