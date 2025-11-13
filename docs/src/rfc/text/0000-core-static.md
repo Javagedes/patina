@@ -18,7 +18,7 @@ polymorphism.
   organization. Also mentioned that we may move additional grouping of configs the same way in the future if deemed
   necessary. Provided example.
 - 2025-11-13: Removed `UefiState` field from the title all together, and only used that as an example of where the
-  dispatcher context will go. Further specifed that other statics will ultimately go elsewhere
+  dispatcher context will go. Further specified that other statics will ultimately go elsewhere
 - 2025-11-13: Expanded on safety regarding the static instance. Mentioned the `Self::instance()` is only to be used in
   efiapi functions.
 - 2025-11-13: Expanded on implementation example for converting the "efiapi" functions to using `Self::instance()` and
@@ -140,12 +140,15 @@ mocking traits that use const fields without defaults. This can be re-evaluated 
 /// Allocations are available when these callbacks are invoked.
 trait ComponentInfo {
     /// An optional platform callback to register components with the core.
+    #[inline(always)]
     fn components<'a>(_add: &mut Add<'a, Component>) { }
 
     /// An optional platform callback to register configurations with the core.
+    #[inline(always)]
     fn configs<'a>(_add: &mut Add<'a, Config>) { }
 
     /// An optional platform callback to register services with the core.
+    #[inline(always)]
     fn services<'a>(_add: &mut Add<'a, Service>) { }
 }
 
@@ -159,6 +162,7 @@ trait Platform {
     type Extractor: SectionExtractor;
 
     /// If true, the platform prioritizes allocating 32-bit memory when not otherwise specified.
+    #[inline(always)]
     fn prioritize_32_bit_memory() -> bool { false }
 
     /// Returns an instance of the platform's section extractor when parsing firmware volumes.
@@ -169,6 +173,9 @@ trait Platform {
     fn gic_bases() -> GicBases;
 }
 ```
+
+In this, platform owners will be encouraged (via documentation) to place `#[inline(always)]` on the trait
+implementations where applicable to help the compiler with optmiziations.
 
 This will introduce changes to the core and how it consumes the trait. An example is shown below
 
