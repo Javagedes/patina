@@ -11,8 +11,6 @@ use patina_ffs::{
     section::{Section, SectionExtractor},
 };
 
-use patina::component::prelude::IntoService;
-
 #[cfg(feature = "brotli")]
 use crate::BrotliSectionExtractor;
 #[cfg(feature = "crc32")]
@@ -21,8 +19,7 @@ use crate::Crc32SectionExtractor;
 use crate::LzmaSectionExtractor;
 
 /// Provides a composite section extractor that combines all section extractors based on enabled feature flags.
-#[derive(Clone, Copy, IntoService)]
-#[service(dyn SectionExtractor)]
+#[derive(Clone, Copy)]
 pub struct CompositeSectionExtractor {
     #[cfg(feature = "brotli")]
     brotli: BrotliSectionExtractor,

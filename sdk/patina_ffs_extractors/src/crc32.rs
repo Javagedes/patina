@@ -12,11 +12,8 @@ use patina_ffs::{
     section::{SectionExtractor, SectionHeader},
 };
 
-use patina::component::prelude::IntoService;
-
 /// Provides extraction for CRC32 sections.
-#[derive(Default, Clone, Copy, IntoService)]
-#[service(dyn SectionExtractor)]
+#[derive(Default, Clone, Copy)]
 pub struct Crc32SectionExtractor {}
 impl SectionExtractor for Crc32SectionExtractor {
     fn extract(&self, section: &patina_ffs::section::Section) -> Result<alloc::vec::Vec<u8>, FirmwareFileSystemError> {

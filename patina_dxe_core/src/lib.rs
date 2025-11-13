@@ -5,20 +5,41 @@
 //!
 //! ## Examples
 //!
-//! ``` rust,no_run
-//! # use patina::component::prelude::*;
-//! # #[derive(IntoComponent, Default)]
+//! ```rust
+//! # use core::ffi::c_void;
+//! # use patina_dxe_core::*;
+//! # #[derive(patina::component::IntoComponent, Default)]
 //! # struct ExampleComponent;
 //! # impl ExampleComponent {
 //! #     fn entry_point(self) -> patina::error::Result<()> { Ok(()) }
 //! # }
-//! # let physical_hob_list = core::ptr::null();
-//! patina_dxe_core::Core::default()
-//!   .init_memory(physical_hob_list)
-//!   .with_service(patina_ffs_extractors::CompositeSectionExtractor::default())
-//!   .with_component(ExampleComponent::default())
-//!   .start()
-//!   .unwrap();
+//! struct ExamplePlatform;
+//!
+//! impl ComponentInfo for ExamplePlatform {
+//!   fn configs(mut add: Add<Config>) {
+//!     add.config(32u32);
+//!     add.config(true);
+//!   }
+//!
+//!   fn components(mut add: Add<Component>) {
+//!     add.component(ExampleComponent::default());
+//!   }
+//! }
+//!
+//! impl Platform for ExamplePlatform {
+//!   type Extractor = patina_ffs_extractors::NullSectionExtractor;
+//!   type ComponentInfo = Self;
+//!
+//!   fn prioritize_32_bit_memory() -> bool {
+//!     true
+//!   }
+//!
+//!   fn section_extractor() -> Self::Extractor {
+//!     patina_ffs_extractors::NullSectionExtractor{}
+//!   }
+//! }
+//!
+//! static CORE: Core<ExamplePlatform> = Core::new();
 //! ```
 //!
 //! ## License
@@ -36,6 +57,7 @@
 extern crate alloc;
 
 mod allocator;
+mod component_dispatcher;
 mod config_tables;
 mod cpu_arch_protocol;
 mod decompress;
@@ -62,19 +84,26 @@ mod systemtables;
 mod tpl_lock;
 
 #[cfg(test)]
+pub use component_dispatcher::MockComponentInfo;
+pub use component_dispatcher::{Add, Component, ComponentInfo, Config, Service};
+
+#[cfg(test)]
 #[macro_use]
 #[coverage(off)]
 pub mod test_support;
 
-use core::{ffi::c_void, ptr, str::FromStr};
+use core::{
+    ffi::c_void,
+    ptr::{self, NonNull},
+    str::FromStr,
+};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use gcd::SpinLockedGcd;
 use memory_manager::CoreMemoryManager;
 use mu_rust_helpers::{function, guid::CALLER_ID};
 use patina::{
-    boot_services::StandardBootServices,
-    component::{Component, IntoComponent, Storage, service::IntoService},
+    component::IntoComponent,
     error::{self, Result},
     performance::{
         logging::{perf_function_begin, perf_function_end},
@@ -85,14 +114,13 @@ use patina::{
         protocols::{bds, status_code},
         status_code::{EFI_PROGRESS_CODE, EFI_SOFTWARE_DXE_CORE, EFI_SW_DXE_CORE_PC_HANDOFF_TO_NEXT},
     },
-    runtime_services::StandardRuntimeServices,
 };
 use patina_ffs::section::SectionExtractor;
 use patina_internal_cpu::{cpu::EfiCpu, interrupts::Interrupts};
 use protocols::PROTOCOL_DB;
 use r_efi::efi;
 
-use crate::{config_tables::memory_attributes_table, perf_timer::PerfTimer};
+use crate::{component_dispatcher::ComponentDispatcher, {config_tables::memory_attributes_table, tpl_lock::TplMutex}, perf_timer::PerfTimer};
 
 #[doc(hidden)]
 #[macro_export]
@@ -114,20 +142,79 @@ macro_rules! error {
 
 pub(crate) static GCD: SpinLockedGcd = SpinLockedGcd::new(Some(events::gcd_map_change));
 
+/// A trait to be implemented by the platform to provide configuration values and types to be used directly by the
+/// Patina DXE Core.
+///
+/// ## Example
+///
+/// ```rust
+/// use patina_dxe_core::*;
+///
+/// struct ExamplePlatform;
+///
+/// impl Platform for ExamplePlatform {
+///   type Extractor = patina_ffs_extractors::NullSectionExtractor;
+///
+///   type ComponentInfo = Self;
+///
+///   fn section_extractor() -> Self::Extractor {
+///     patina_ffs_extractors::NullSectionExtractor{}
+///   }
+///
+///   fn prioritize_32_bit_memory() -> bool {
+///     true
+///   }
+/// }
+///
+/// impl ComponentInfo for ExamplePlatform {}
+/// ```
+#[cfg_attr(test, mockall::automock(type Extractor = patina_ffs_extractors::NullSectionExtractor; type ComponentInfo = MockComponentInfo;))]
+pub trait Platform {
+    /// The Platform component information type.
+    type ComponentInfo: ComponentInfo;
+    /// The platform's section extractor type, used when extracting sections from firmware volumes.
+    type Extractor: SectionExtractor + 'static;
+    /// Informs the core that it should prioritize allocating 32-bit memory when
+    /// not otherwise specified.
+    ///
+    /// This should only be used as a workaround in environments where address width
+    /// bugs exist in uncontrollable dependent software. For example, when booting
+    /// to an OS that puts any addresses from UEFI into a uint32.
+    fn prioritize_32_bit_memory() -> bool {
+        false
+    }
+
+    /// Returns an instance of the platform's section extractor.
+    fn section_extractor() -> Self::Extractor;
+
+    /// Informs the core of the GIC base addresses for AARCH64 systems.
+    #[cfg(target_arch = "aarch64")]
+    fn gic_bases() -> GicBases;
+}
+
 /// A configuration struct containing the GIC bases (gic_d, gic_r) for AARCH64 systems.
 ///
 /// ## Example
 ///
-/// ```rust,no_run
-/// use patina_dxe_core::{Core, GicBases};
-/// # let physical_hob_list = core::ptr::null();
+/// ```rust
+/// use patina_dxe_core::*;
 ///
-/// let gic_bases = GicBases::new(0x1E000000, 0x1E010000);
-/// let core = Core::default()
-///    .init_memory(physical_hob_list)
-///    .with_config(gic_bases)
-///    .start()
-///    .unwrap();
+/// struct PlatformConfig;
+///
+/// # impl ComponentInfo for PlatformConfig {}
+///
+/// impl Platform for PlatformConfig {
+///   # type Extractor = patina_ffs_extractors::NullSectionExtractor;
+///   # type ComponentInfo = Self;
+///
+///   # fn section_extractor() -> Self::Extractor {
+///   #  patina_ffs_extractors::NullSectionExtractor{}
+///   # }
+///   # #[cfg(target_arch = "aarch64")]
+///   fn gic_bases() -> GicBases {
+///     GicBases::new(0x1E000000, 0x1E010000)
+///   }
+/// }
 /// ```
 #[derive(Debug, PartialEq)]
 pub struct GicBases(pub u64, pub u64);
@@ -145,91 +232,109 @@ impl Default for GicBases {
     }
 }
 
-#[doc(hidden)]
-/// A zero-sized type to gate allocation functions in the [Core].
-pub struct Alloc;
-
-#[doc(hidden)]
-/// A zero-sized type to gate non-allocation functions in the [Core].
-pub struct NoAlloc;
-
-/// The initialize phase DxeCore, responsible for setting up the environment with the given configuration.
+/// Platform configured DXE Core responsible for the DXE phase of UEFI booting.
 ///
-/// This struct is the entry point for the DXE Core, which is a two phase system. The current phase is denoted by the
-/// current struct representing the generic parameter "MemoryState". Creating a [Core] object will initialize the
-/// struct in the `NoAlloc` phase. Calling the [init_memory](Core::init_memory) method will transition the struct
-/// to the `Alloc` phase. Each phase provides a subset of methods that are available to the struct, allowing
-/// for a more controlled configuration and execution process.
+/// This struct is generic over two traits:
 ///
-/// During the `NoAlloc` phase, the struct provides methods to configure the DXE core environment
-/// prior to allocation capability such as CPU functionality and section extraction. During this time,
-/// no allocations are available.
+/// 1. [CoreConfig]: This trait exposes the platform-specific configuration options used directly by the DXE Core.
+///    Associated types and methods within this trait provide configuration values that influence the behavior that may
+///    be different between platforms, such as the prioritization of 32-bit memory allocations. It may also specify
+///    associated types that define platform-specific implementations such as a SectionExtractor implementation.
+/// 2. [Platform]: This trait provides callbacks for the platform to register additional patina components,
+///    configurations and services that will be dispatched and made available during the DXE phase. These callbacks
+///    will not influence core behavior directly, but allows the platform to attach dispatchable drivers and configure
+///    them.
 ///
-/// Once the [init_memory](Core::init_memory) method is called, the struct transitions to the `Alloc` phase,
-/// which provides methods for adding configuration and components with the DXE core, and eventually starting the
-/// dispatching process and eventual handoff to the BDS phase.
-///
-/// ## Soft Service Dependencies
-///
-/// The core may take a soft dependency on some services, which are described in the below table. These services must
-/// be directly registered with the [Core::with_service] method. If not, there is no guarantee that the service will
-/// be available before the core needs it.
-///
-/// | Service Trait                           | Description                                      |
-/// |-----------------------------------------|--------------------------------------------------|
-/// | [patina_ffs::section::SectionExtractor] | FW volume section extraction w/ decompression    |
+/// To properly use this struct, the platform must implement both the [CoreConfig] and [Platform] traits, then create
+/// a static instance of the [Core] struct with the platform types as generic parameters (See example below). From
+/// there, simply call the [entry_point](Core::entry_point) method within the main function to start the DXE Core.
 ///
 /// ## Examples
 ///
-/// ``` rust,no_run
-/// # use patina::component::prelude::*;
-/// # #[derive(IntoComponent, Default)]
+/// ```rust
+/// # use core::ffi::c_void;
+/// # use patina_dxe_core::*;
+/// # #[derive(patina::component::IntoComponent, Default)]
 /// # struct ExampleComponent;
 /// # impl ExampleComponent {
 /// #     fn entry_point(self) -> patina::error::Result<()> { Ok(()) }
 /// # }
-/// # let physical_hob_list = core::ptr::null();
-/// patina_dxe_core::Core::default()
-///   .init_memory(physical_hob_list)
-///   .with_service(patina_ffs_extractors::CompositeSectionExtractor::default())
-///   .with_component(ExampleComponent::default())
-///   .start()
-///   .unwrap();
+/// struct ExamplePlatform;
+///
+/// impl ComponentInfo for ExamplePlatform {
+///   fn configs(mut add: Add<Config>) {
+///     add.config(32u32);
+///     add.config(true);
+///   }
+///
+///   fn components(mut add: Add<Component>) {
+///     add.component(ExampleComponent::default());
+///   }
+/// }
+///
+/// impl Platform for ExamplePlatform {
+///   type Extractor = patina_ffs_extractors::NullSectionExtractor;
+///   type ComponentInfo = Self;
+///
+///   fn prioritize_32_bit_memory() -> bool {
+///     true
+///   }
+///
+///   fn section_extractor() -> Self::Extractor {
+///     patina_ffs_extractors::NullSectionExtractor{}
+///   }
+/// }
+///
+/// static CORE: Core<ExamplePlatform> = Core::new();
 /// ```
-pub struct Core<MemoryState> {
-    physical_hob_list: *const c_void,
-    hob_list: HobList<'static>,
-    components: Vec<Box<dyn Component>>,
-    storage: Storage,
+pub struct Core<P: Platform> {
+    hob_list: TplMutex<HobList<'static>>,
+    component_dispatcher: TplMutex<ComponentDispatcher>,
     platform_timer: PerfTimer,
-    _memory_state: core::marker::PhantomData<MemoryState>,
+    _marker: core::marker::PhantomData<P>,
 }
 
-impl Default for Core<NoAlloc> {
+unsafe impl<P: Platform> Sync for Core<P> {}
+
+impl<P: Platform> Default for Core<P> {
     fn default() -> Self {
-        Core {
-            physical_hob_list: core::ptr::null(),
-            hob_list: HobList::default(),
-            components: Vec::new(),
-            storage: Storage::new(),
-            platform_timer: PerfTimer::new(),
-            _memory_state: core::marker::PhantomData,
-        }
+        Self::new()
     }
 }
 
-impl Core<NoAlloc> {
-    /// Initializes the timer frequency if a platform provides a custom implementation.
-    pub fn init_timer_frequency(self, frequency: Option<u64>) -> Core<NoAlloc> {
-        if let Some(freq_override) = frequency {
-            self.platform_timer.set_frequency(freq_override);
+impl<P: Platform> Core<P> {
+    /// Creates a new instance of the DXE Core in the NoAlloc phase.
+    pub const fn new() -> Self {
+        Self {
+            component_dispatcher: ComponentDispatcher::new_locked(),
+            hob_list: TplMutex::new(efi::TPL_NOTIFY, HobList::new(), "HobList"),
+            platform_timer: PerfTimer::new(),
+            _marker: core::marker::PhantomData,
         }
-        self
+    }
+
+    /// The entry point for the Patina DXE Core.
+    pub fn entry_point(&'static self, physical_hob_list: *const c_void) -> ! {
+        self.init_memory(physical_hob_list);
+
+        if let Err(err) = self.start(physical_hob_list) {
+            log::error!("DXE Core failed to start: {err:?}");
+        }
+
+        loop {
+            call_bds();
+            log::info!("Returned from BDS phase. Re-dispatching.");
+            if let Err(err) = self.core_dispatcher() {
+                log::error!("DXE Core failed to re-dispatch: {err:?}");
+            }
+        }
     }
 
     /// Initializes the core with the given configuration, including GCD initialization, enabling allocations.
-    pub fn init_memory(mut self, physical_hob_list: *const c_void) -> Core<Alloc> {
+    pub fn init_memory(&self, physical_hob_list: *const c_void) {
         log::info!("DXE Core Crate v{}", env!("CARGO_PKG_VERSION"));
+
+        GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
 
         let mut cpu = EfiCpu::default();
         cpu.initialize().expect("Failed to initialize CPU!");
@@ -249,7 +354,7 @@ impl Core<NoAlloc> {
 
         // After this point Rust Heap usage is permitted (since GCD is initialized with a single known-free region).
         // Relocate the hobs from the input list pointer into a Vec.
-        self.hob_list.discover_hobs(physical_hob_list);
+        self.hob_list.lock().discover_hobs(physical_hob_list);
 
         log::trace!("HOB list discovered is:");
         log::trace!("{:#x?}", self.hob_list);
@@ -257,11 +362,11 @@ impl Core<NoAlloc> {
         //make sure that well-known handles exist.
         PROTOCOL_DB.init_protocol_db();
         // Initialize full allocation support.
-        allocator::init_memory_support(&self.hob_list);
+        allocator::init_memory_support(&self.hob_list.lock());
         // we have to relocate HOBs after memory services are initialized as we are going to allocate memory and
         // the initial free memory may not be enough to contain the HOB list. We need to relocate the HOBs because
         // the initial HOB list is not in mapped memory as passed from pre-DXE.
-        self.hob_list.relocate_hobs();
+        self.hob_list.lock().relocate_hobs();
 
         // Add custom monitor commands to the debugger before initializing so that
         // they are available in the initial breakpoint.
@@ -274,127 +379,9 @@ impl Core<NoAlloc> {
 
         log::info!("GCD - After memory init:\n{GCD}");
 
-        self.storage.add_service(cpu);
-        self.storage.add_service(interrupt_manager);
-        self.storage.add_service(CoreMemoryManager);
-        self.storage.add_service(PerfTimer::with_frequency(self.platform_timer.get_stored_frequency()));
-
-        Core {
-            physical_hob_list,
-            hob_list: self.hob_list,
-            components: self.components,
-            storage: self.storage,
-            platform_timer: self.platform_timer,
-            _memory_state: core::marker::PhantomData,
-        }
-    }
-
-    /// Informs the core that it should prioritize allocating 32-bit memory when
-    /// not otherwise specified.
-    ///
-    /// This should only be used as a workaround in environments where address width
-    /// bugs exist in uncontrollable dependent software. For example, when booting
-    /// to an OS that puts any addresses from UEFI into a uint32.
-    ///
-    /// Must be called prior to [`Core::init_memory`].
-    ///
-    /// ## Example
-    ///
-    /// ``` rust,no_run
-    /// # use patina::component::prelude::*;
-    /// # fn example_component() -> patina::error::Result<()> { Ok(()) }
-    /// # let physical_hob_list = core::ptr::null();
-    /// patina_dxe_core::Core::default()
-    ///   .prioritize_32_bit_memory()
-    ///   .init_memory(physical_hob_list)
-    ///   .start()
-    ///   .unwrap();
-    /// ```
-    pub fn prioritize_32_bit_memory(self) -> Self {
-        // This doesn't actually alter the core's state, but uses the same model
-        // for consistent abstraction.
-        GCD.prioritize_32_bit_memory(true);
-        self
-    }
-}
-
-impl Core<Alloc> {
-    /// Directly registers an instantiated service with the core, making it available immediately.
-    #[inline(always)]
-    pub fn with_service(mut self, service: impl IntoService + 'static) -> Self {
-        self.storage.add_service(service);
-        self
-    }
-
-    /// Registers a component with the core, that will be dispatched during the driver execution phase.
-    #[inline(always)]
-    pub fn with_component<I>(mut self, component: impl IntoComponent<I>) -> Self {
-        self.insert_component(self.components.len(), component.into_component());
-        self
-    }
-
-    /// Inserts a component at the given index. If no index is provided, the component is added to the end of the list.
-    fn insert_component(&mut self, idx: usize, mut component: Box<dyn Component>) {
-        component.initialize(&mut self.storage);
-        self.components.insert(idx, component);
-    }
-
-    /// Adds a configuration value to the Core's storage. All configuration is locked by default. If a component is
-    /// present that requires a mutable configuration, it will automatically be unlocked.
-    pub fn with_config<C: Default + 'static>(mut self, config: C) -> Self {
-        self.storage.add_config(config);
-        self
-    }
-
-    /// Parses the HOB list producing a `Hob\<T\>` struct for each guided HOB found with a registered parser.
-    fn parse_hobs(&mut self) {
-        for hob in self.hob_list.iter() {
-            if let patina::pi::hob::Hob::GuidHob(guid, data) = hob {
-                let parser_funcs = self.storage.get_hob_parsers(&patina::OwnedGuid::from(guid.name));
-                if parser_funcs.is_empty() {
-                    let (f0, f1, f2, f3, f4, &[f5, f6, f7, f8, f9, f10]) = guid.name.as_fields();
-                    let name = alloc::format!(
-                        "{f0:08x}-{f1:04x}-{f2:04x}-{f3:02x}{f4:02x}-{f5:02x}{f6:02x}{f7:02x}{f8:02x}{f9:02x}{f10:02x}"
-                    );
-                    log::warn!(
-                        "No parser registered for HOB: GuidHob {{ {:?}, name: Guid {{ {} }} }}",
-                        guid.header,
-                        name
-                    );
-                } else {
-                    for parser_func in parser_funcs {
-                        parser_func(data, &mut self.storage);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Attempts to dispatch all components.
-    ///
-    /// This method will exit once no components remain or no components were dispatched during a full iteration.
-    fn dispatch_components(&mut self) -> bool {
-        let len = self.components.len();
-        self.components.retain_mut(|component| {
-            // Ok(true): Dispatchable and dispatched returning success
-            // Ok(false): Not dispatchable at this time.
-            // Err(e): Dispatchable and dispatched returning failure
-            let name = component.metadata().name();
-            log::trace!("Dispatch Start: Id = [{name:?}]");
-            !match component.run(&mut self.storage) {
-                Ok(true) => {
-                    log::info!("Dispatched: Id = [{name:?}] Status = [Success]");
-                    true
-                }
-                Ok(false) => false,
-                Err(err) => {
-                    log::error!("Dispatched: Id = [{name:?}] Status = [Failed] Error = [{err:?}]");
-                    debug_assert!(false);
-                    true // Component dispatched, even if it did fail, so remove from self.components to avoid re-dispatch.
-                }
-            }
-        });
-        len != self.components.len()
+        self.component_dispatcher.lock().add_service(cpu);
+        self.component_dispatcher.lock().add_service(interrupt_manager);
+        self.component_dispatcher.lock().add_service(CoreMemoryManager);
     }
 
     /// Performs a combined dispatch of Patina components and UEFI drivers.
@@ -404,11 +391,11 @@ impl Core<Alloc> {
     ///
     /// 1. A single iteration of dispatching Patina components, retaining those that were not dispatched.
     /// 2. A single iteration of dispatching UEFI drivers via the dispatcher module.
-    fn core_dispatcher(&mut self) -> Result<()> {
+    fn core_dispatcher(&self) -> Result<()> {
         perf_function_begin(function!(), &CALLER_ID, create_performance_measurement);
         loop {
             // Patina component dispatch
-            let dispatched = self.dispatch_components();
+            let dispatched = self.component_dispatcher.lock().dispatch();
 
             // UEFI driver dispatch
             let dispatched = dispatched
@@ -423,34 +410,6 @@ impl Core<Alloc> {
         Ok(())
     }
 
-    fn display_components_not_dispatched(&self) {
-        if !self.components.is_empty() {
-            let name_len = "name".len();
-            let param_len = "failed_param".len();
-
-            let max_name_len = self.components.iter().map(|c| c.metadata().name().len()).max().unwrap_or(name_len);
-            let max_param_len = self
-                .components
-                .iter()
-                .map(|c| c.metadata().failed_param().map(|s| s.len()).unwrap_or(0))
-                .max()
-                .unwrap_or(param_len);
-
-            log::warn!("Components not dispatched:");
-            log::warn!("{:-<max_name_len$} {:-<max_param_len$}", "", "");
-            log::warn!("{:<max_name_len$} {:<max_param_len$}", "name", "failed_param");
-
-            for component in &self.components {
-                let metadata = component.metadata();
-                log::warn!(
-                    "{:<max_name_len$} {:<max_param_len$}",
-                    metadata.name(),
-                    metadata.failed_param().unwrap_or("")
-                );
-            }
-        }
-    }
-
     /// Returns the length of the HOB list.
     /// Clippy gets unhappy if we call get_c_hob_list_size directly, because it gets confused, thinking
     /// get_c_hob_list_size is not marked unsafe, but it is
@@ -458,12 +417,9 @@ impl Core<Alloc> {
         unsafe { get_c_hob_list_size(hob_list) }
     }
 
-    fn initialize_system_table(&mut self) -> Result<()> {
+    fn initialize_system_table(&self, physical_hob_list: *const c_void) -> Result<()> {
         let hob_list_slice = unsafe {
-            core::slice::from_raw_parts(
-                self.physical_hob_list as *const u8,
-                Self::get_hob_list_len(self.physical_hob_list),
-            )
+            core::slice::from_raw_parts(physical_hob_list as *const u8, Self::get_hob_list_len(physical_hob_list))
         };
         let relocated_c_hob_list = hob_list_slice.to_vec().into_boxed_slice();
 
@@ -474,13 +430,13 @@ impl Core<Alloc> {
             let st = st.as_mut().expect("System Table not initialized!");
 
             allocator::install_memory_services(st.boot_services_mut());
-            gcd::init_paging(&self.hob_list);
+            gcd::init_paging(&self.hob_list.lock());
             events::init_events_support(st.boot_services_mut());
             protocols::init_protocol_support(st.boot_services_mut());
             misc_boot_services::init_misc_boot_services_support(st.boot_services_mut());
             config_tables::init_config_tables_support(st.boot_services_mut());
             runtime::init_runtime_support(st.runtime_services_mut());
-            image::init_image_support(&self.hob_list, st);
+            image::init_image_support(&self.hob_list.lock(), st);
             dispatcher::init_dispatcher();
             dxe_services::init_dxe_services(st);
             driver_services::init_driver_services(st.boot_services_mut());
@@ -520,65 +476,75 @@ impl Core<Alloc> {
         memory_attributes_table::init_memory_attributes_table_support();
 
         // Add Boot Services and Runtime Services to storage.
-        // SAFETY: This is valid because these pointer live thoughout the boot.
-        // Note: I had to use the ptr instead of locking the table which event though is static does not seems to return static refs. Need to investigate.
+        // SAFETY: The pointers are a valid Boot Services and Runtime Services table pointers that live for the lifetime of the DXE Core.
         unsafe {
-            self.storage.set_boot_services(StandardBootServices::new(&*boot_services_ptr));
-            self.storage.set_runtime_services(StandardRuntimeServices::new(&*runtime_services_ptr));
+            self.component_dispatcher.lock().set_boot_services(NonNull::new_unchecked(boot_services_ptr));
+            self.component_dispatcher.lock().set_runtime_services(NonNull::new_unchecked(runtime_services_ptr));
         }
 
         Ok(())
     }
 
+    /// Registers platform provided components, configurations, and services.
+    fn add_platform_components(&self) {
+        let mut dispatcher = self.component_dispatcher.lock();
+
+        P::ComponentInfo::components(Add::new(&mut dispatcher));
+
+        P::ComponentInfo::configs(Add::new(&mut dispatcher));
+
+        P::ComponentInfo::services(Add::new(&mut dispatcher));
+    }
+
     /// Registers core provided components
     #[allow(clippy::default_constructed_unit_structs)]
-    fn add_core_components(&mut self) {
-        self.insert_component(0, decompress::DecompressProtocolInstaller::default().into_component());
-        self.insert_component(0, systemtables::SystemTableChecksumInstaller::default().into_component());
-        self.insert_component(0, cpu_arch_protocol::CpuArchProtocolInstaller::default().into_component());
+    fn add_core_components(&self) {
+        let mut dispatcher = self.component_dispatcher.lock();
+        dispatcher.insert_component(0, decompress::DecompressProtocolInstaller::default().into_component());
+        dispatcher.insert_component(0, systemtables::SystemTableChecksumInstaller::default().into_component());
+        dispatcher.insert_component(0, cpu_arch_protocol::CpuArchProtocolInstaller::default().into_component());
         #[cfg(all(target_os = "uefi", target_arch = "aarch64"))]
-        self.insert_component(0, hw_interrupt_protocol::HwInterruptProtocolInstaller::default().into_component());
+        dispatcher.insert_component(0, hw_interrupt_protocol::HwInterruptProtocolInstaller::default().into_component());
     }
 
     /// Starts the core, dispatching all drivers.
-    pub fn start(mut self) -> Result<()> {
+    pub fn start(&self, physical_hob_list: *const c_void) -> Result<()> {
+        log::info!("Registering platform components");
+        self.add_platform_components();
+        log::info!("Finished.");
+
         log::info!("Registering default components");
         self.add_core_components();
         log::info!("Finished.");
 
         log::info!("Initializing System Table");
-        self.initialize_system_table()?;
+        self.initialize_system_table(physical_hob_list)?;
         log::info!("Finished.");
 
         log::info!("Parsing HOB list for Guided HOBs.");
-        self.parse_hobs();
+        self.component_dispatcher.lock().insert_hobs(&self.hob_list.lock());
         log::info!("Finished.");
 
-        if let Some(extractor) = self.storage.get_service::<dyn SectionExtractor>() {
-            log::debug!("Section Extractor service found, registering with FV and Dispatcher.");
-            dispatcher::register_section_extractor(extractor.clone());
-            fv::register_section_extractor(extractor);
-        }
+        let extractor = Box::leak(Box::new(P::section_extractor()));
+        dispatcher::register_section_extractor(extractor);
+        fv::register_section_extractor(extractor);
 
         log::info!("Parsing FVs from FV HOBs");
-        fv::parse_hob_fvs(&self.hob_list)?;
+        fv::parse_hob_fvs(&self.hob_list.lock())?;
         log::info!("Finished.");
 
         log::info!("Dispatching Drivers");
         self.core_dispatcher()?;
-        self.storage.lock_configs();
+        self.component_dispatcher.lock().lock_configs();
         self.core_dispatcher()?;
         log::info!("Finished Dispatching Drivers");
 
-        self.display_components_not_dispatched();
+        self.component_dispatcher.lock().display_not_dispatched();
 
         core_display_missing_arch_protocols();
 
         dispatcher::display_discovered_not_dispatched();
 
-        call_bds();
-
-        log::info!("Finished");
         Ok(())
     }
 }

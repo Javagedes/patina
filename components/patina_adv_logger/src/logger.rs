@@ -10,13 +10,9 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 use crate::memory_log::{self, AdvancedLog, LogEntry};
-use core::marker::Send;
+use core::{ffi::c_void, marker::Send, ptr};
 use log::Level;
-use patina::{
-    component::service::{Service, perf_timer::ArchTimerFunctionality},
-    log::Format,
-    serial::SerialIO,
-};
+use patina::{component::service::{Service, perf_timer::ArchTimerFunctionality}, error::EfiError, log::Format, pi::hob::{Hob, PhaseHandoffInformationTable}, serial::SerialIO};
 use r_efi::efi;
 use spin::Once;
 
@@ -63,6 +59,44 @@ where
     /// Should only be called once during setup.
     pub fn init_timer(&self, timer: Service<dyn ArchTimerFunctionality>) {
         self.timer.call_once(|| timer);
+    }
+
+    /// Initialize the advanced logger.
+    ///
+    /// Initializes the advanced logger memory log based on the provided physical hob
+    /// list. The physical hob list is used so this can be initialized before memory
+    /// allocations.
+    ///
+    /// ## Safety
+    ///
+    /// The caller must ensure that the provided physical hob list pointer is valid and well structured. Failure to do
+    /// so may result in unexpected memory access and undefined behavior.
+    ///
+    pub unsafe fn init_advanced_logger(&self, physical_hob_list: *const c_void) -> Result<(), EfiError> {
+        debug_assert!(!physical_hob_list.is_null(), "Could not initialize adv logger due to null hob list.");
+        let hob_list_info =
+            // SAFETY: The caller must provide a valid physical HOB list pointer.
+            unsafe { (physical_hob_list as *const PhaseHandoffInformationTable).as_ref() }.ok_or_else(|| {
+                log::error!("Could not initialize adv logger due to null hob list.");
+                EfiError::InvalidParameter
+            })?;
+        let hob_list = Hob::Handoff(hob_list_info);
+        for hob in &hob_list {
+            if let Hob::GuidHob(guid_hob, data) = hob
+                && guid_hob.name == memory_log::ADV_LOGGER_HOB_GUID
+            {
+                // SAFETY: The HOB will have a address of the log info
+                // immediately following the HOB header.
+                unsafe {
+                    let address: *const efi::PhysicalAddress = ptr::from_ref(data) as *const efi::PhysicalAddress;
+                    let log_info_addr = (*address) as efi::PhysicalAddress;
+                    self.set_log_info_address(log_info_addr);
+                };
+                return Ok(());
+            }
+        }
+
+        Err(EfiError::NotFound)
     }
 
     /// Writes a log entry to the hardware port and memory log if available.

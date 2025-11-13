@@ -7,7 +7,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 #![cfg(feature = "std")]
-
+#![allow(static_mut_refs)]
 extern crate alloc;
 
 use patina::pi::{
@@ -29,20 +29,32 @@ static LOGGER: patina::log::SerialLogger<patina::serial::Terminal> = patina::log
     patina::serial::Terminal {},
 );
 
+struct StdPlatform;
+
+impl patina_dxe_core::Platform for StdPlatform {
+    type Extractor = patina_ffs_extractors::CompositeSectionExtractor;
+    type ComponentInfo = Self;
+
+    fn prioritize_32_bit_memory() -> bool {
+        true
+    }
+
+    fn section_extractor() -> Self::Extractor {
+        patina_ffs_extractors::CompositeSectionExtractor::default()
+    }
+}
+
+impl patina_dxe_core::ComponentInfo for StdPlatform {}
+
+static mut CORE: Core<StdPlatform> = Core::new();
+
 fn main() -> patina::error::Result<()> {
     if log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Trace)).is_err() {
         log::warn!("Global logger has already been set.");
     }
 
     let hob_list = build_hob_list();
-    Core::default()
-        // Add any config knob functions for pre-gcd-init Core
-        // .with_some_config(true)
-        .init_memory(hob_list) // We can make allocations now!
-        // Add any config knob functions for post-gcd-init Core
-        // .with_some_config(true)
-        .with_service(patina_ffs_extractors::CompositeSectionExtractor::default())
-        .start()
+    unsafe { CORE.entry_point(hob_list) }
 }
 
 const MEM_SIZE: u64 = 0x2000000;
