@@ -18,7 +18,7 @@ polymorphism.
   organization. Also mentioned that we may move additional grouping of configs the same way in the future if deemed
   necessary. Provided example.
 - 2025-11-13: Removed `UefiState` field from the title all together, and only used that as an example of where the
-  dispatcher context will go. Further specifed that other statics will ultimetly go elsewhere
+  dispatcher context will go. Further specifed that other statics will ultimately go elsewhere
 - 2025-11-13: Expanded on safety regarding the static instance. Mentioned the `Self::instance()` is only to be used in
   efiapi functions.
 - 2025-11-13: Expanded on implementation example for converting the "efiapi" functions to using `Self::instance()` and
@@ -120,7 +120,7 @@ N/A, keep the same.
 
 The first design change is that we will introduce two new traits for fully configuring / describing the platform at
 compile time. This includes both function implementations for configuration, and type specifications for generic trait
-resolution. If you remember previsouly, we did this in the core itself, and it lead to a laundry list of traits with
+resolution. If you remember previously, we did this in the core itself, and it lead to a laundry list of traits with
 complex types specified. This interface is cleaner, and procides less complexities in the `Core`.
 
 The `Platform` trait will start with a limited number of configuration options as shown below, but it is expected that
@@ -162,11 +162,11 @@ trait Platform {
     fn prioritize_32_bit_memory() -> bool { false }
 
     /// Returns an instance of the platform's section extractor when parsing firmware volumes.
-    fn section_extractor() -> Self::Extractor
+    fn section_extractor() -> Self::Extractor;
 
-    /// Specifies teh GIC base addresses for AARCH64 systems.
+    /// Specifies the GIC base addresses for AARCH64 systems.
     #[cfg(target_arch = "aarch64")]
-    fn gic_bases() -> GicBases
+    fn gic_bases() -> GicBases;
 }
 ```
 
@@ -186,7 +186,7 @@ impl <P: Platform> Core<P> {
         P::ComponentInfo::components(Add {
             storage: &mut self.storage,
             components: &mut self.components,
-            _limiter: core::marker::PhantdomData,
+            _limiter: core::marker::PhantomData,
         });
 
         P::ComponentInfo::configs(Add {
@@ -228,7 +228,7 @@ Since we will be moving all of the static state into the Core, we need a clean w
 is to group statics as seems appropriate, but is left as an implementation detail. For the sake of this RFC, we will
 start with the idea of a new struct called `UefiState` which will store some of the pure UEFI related statics. This
 includes the dispatcher context, and parsed FV data. Other statics, such as the ones more kernel-like in nature will
-ultimetly be moved elsewhere, but again, that is an implementation detail for the sake of this RFC.
+ultimately be moved elsewhere, but again, that is an implementation detail for the sake of this RFC.
 statics sit in the top-level Core struct as fields.
 
 Please note the application of this RFC will take place over multiple PRs as the complexity introduced by moving these
@@ -251,7 +251,7 @@ struct Core<P: Platform> {
 ```
 
 For the most part, the move of a static member into the core is that simple. There is some work to be done to handle
-the `efiapi` methods that previsouly directly access that static, which will be discussed in the next section.
+the `efiapi` methods that previously directly access that static, which will be discussed in the next section.
 
 The main difficulty of this move is that we need to perform some analysis to determine the dependency tree between all
 statics in the core. We can only transition the "leaf node" statics* (e.g. the ones that do not have any other statics
@@ -268,18 +268,18 @@ The biggest limitation of the Core is that we are compatible with "efiapi" funct
 the FFI boundary and thus we cannot capture state in lambdas, like is the normal process for getting Sync/Send safe
 data into stateless callbacks. To fix this, we create a static, type-erased pointer pointing at our Core. We can then
 access that pointer into our "efiapi" functions. It must be a type-erased pointer because the Core is generic over
-`P` ("Platform"), which ultimetly means the layout in memory of the Core is not known by our crate, only by the binary
+`P` ("Platform"), which ultimately means the layout in memory of the Core is not known by our crate, only by the binary
 crate using the core.
 
 This is only able to be done because of the general context in which our crate is used. There is only ever going to be
-one `Core<P>` initialized in a given binary, so we can guaruntee that the `Core` in the pointer is our core. To
+one `Core<P>` initialized in a given binary, so we can guarantee that the `Core` in the pointer is our core. To
 continue down the safety conversation, there are also a few extra percautions we take. The first is that the only way
 to set the instance is through the `entry_point` method, which requires that `Self` have a lifetime of `'static`. This
-guaruntees the pointer will always be valid.
+guarantees the pointer will always be valid.
 
 The next has to do with mutable aliasing. It is impossible. Since the platform must instantiate the `Core` as a static,
 it must always be immutable (.e.g. not `static mut`). In addition to this, the `instance()` function (which gets the
-static referenced core in the "efiapi" functions), also only returns a reference. What this ultimetly means is that all
+static referenced core in the "efiapi" functions), also only returns a reference. What this ultimately means is that all
 fields in the Core must now have their own interior mutability. For the previously static types, this is no problem.
 They already had that. But it does result in us needing to add some wrapper types around our existing fields. That is
 an implementation detail that will not be discussed here.
@@ -322,9 +322,9 @@ wrappers around a first-class pure-rust implementation. The "efiapi" function wi
 2. Convert any C / UEFI types to rust types (mainly pointers to references, including null checks)
 3. Call the pure rust method.
 
-The pure rust methods will be implemented on the appopriate field of the `Core` (not the `Core` itself) as seems
-appopriate during the implementation, but the "efiapi" method must be implemented directly on the `Core` so that it can
-call `Self::instance()`. Due to the rust module system, we can implement these "efiapi" methods on the `Core` in a
+The pure rust methods will be implemented on the appropriate field of the `Core` (not the `Core` itself) as seems
+appropriate during the implementation, but the "efiapi" method must be implemented directly on the `Core` so that it
+can call `Self::instance()`. Due to the rust module system, we can implement these "efiapi" methods on the `Core` in a
 different module then the `Core` was defined. If these functions are not marked as `pub`, then they will not be
 callable outside of that module, which will be good for preventing users from calling the "efiapi" methods directly.
 
