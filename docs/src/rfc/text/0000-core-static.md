@@ -241,7 +241,7 @@ statics sit in the top-level Core struct as fields.
 Please note the application of this RFC will take place over multiple PRs as the complexity introduced by moving these
 statics is quite vast. For this RFC, we will continue to show examples based off the dispatcher_context, as no other
 statics depend directly on it, and it's move into the core is simple compared to the others. Additionally, it allows
-demonstaration of moving a struct that is currently a dynamic trait object (dynamic polymorphism) to static 
+demonstaration of moving a struct that is currently a dynamic trait object (dynamic polymorphism) to static
 polymorphism decided by platform.
 
 ```rust
