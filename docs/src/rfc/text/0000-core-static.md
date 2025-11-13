@@ -14,6 +14,15 @@ polymorphism.
 - 2025-11-11: Remove associated constant from Platform trait to allow usage of `mockall::automock`
 - 2025-11-11: Specify that not all statics will necessarily go in `UefiState` struct. Specify that the intent is to
   better organize the fields inside of the core, instead of having a core with 30 fields.
+- 2025-11-13: Updated the Platform trait to sub-trait (type association) the component configuration for better
+  organization. Also mentioned that we may move additional grouping of configs the same way in the future if deemed
+  necessary. Provided example.
+- 2025-11-13: Removed `UefiState` field from the title all together, and only used that as an example of where the
+  dispatcher context will go. Further specifed that other statics will ultimetly go elsewhere
+- 2025-11-13: Expanded on safety regarding the static instance. Mentioned the `Self::instance()` is only to be used in
+  efiapi functions.
+- 2025-11-13: Expanded on implementation example for converting the "efiapi" functions to using `Self::instance()` and
+  described a method for making sure the efiapi functions cannot be called from within the core.
 
 ## Motivation
 
@@ -107,37 +116,57 @@ N/A, keep the same.
 
 ## Rust Code Design
 
-### Addition of the `Platform` trait
+### Addition of the `Platform` and `ComponentInfo` traits
 
-The first design change is that we will introduce a `Platform` trait that will fully describe all platform
-customizations available. This includes both function implementations for configuration, and type specifications for
-generic trait resolution. If you remember previously, we did this in the core itself, and it lead to a laundry list of
-traits with complex types specified. This interface is cleaner, and provides less complexities in the `Core`.
+The first design change is that we will introduce two new traits for fully configuring / describing the platform at
+compile time. This includes both function implementations for configuration, and type specifications for generic trait
+resolution. If you remember previsouly, we did this in the core itself, and it lead to a laundry list of traits with
+complex types specified. This interface is cleaner, and procides less complexities in the `Core`.
 
-To start, this trait will have a limited number of configuration options as shown below, but it is expected that more
-will be specified as needed. Note that this trait is now what adds components / configs / services, instead of the core.
+The `Platform` trait will start with a limited number of configuration options as shown below, but it is expected that
+more will be specified as needed. If necessary, groupings of configurations will be placed in a sub-trait, and type
+associated, similar to how the `ComponentInfo` trait is type associated to the `Platform` trait as seen below.
+
+The `ComponentInfo` trait is the new location to register components, configs, and services. It breaks the registration
+out into 3 distinct callback methods to enforce better organization. This trait replaces the `with_component`,
+`with_service` and `with_config` methods that were directly implemented on the core.
 
 **Note:** It is elected **not** to use associated consts (e.g. const fields) in the Platform trait as `automock` does not
 mocking traits that use const fields without defaults. This can be re-evaluated at a different time if need be.
 
 ```rust
-// In patina_dxe_core/src/lib.rs
-#[cfg_attr(test, mockall::automock)]
+/// A trait to be implemented by the platform to register additional components, configurations, and services.
+///
+/// Allocations are available when these callbacks are invoked.
+trait ComponentInfo {
+    /// An optional platform callback to register components with the core.
+    fn components<'a>(_add: &mut Add<'a, Component>) { }
+
+    /// An optional platform callback to register configurations with the core.
+    fn configs<'a>(_add: &mut Add<'a, Config>) { }
+
+    /// An optional platform callback to register services with the core.
+    fn services<'a>(_add: &mut Add<'a, Service>) { }
+}
+
+/// A trait to be implemented by the platform to provide configuration values and types to be used directly by the
+/// Patina DXE Core.
 trait Platform {
+     /// The Platform component information.
+    type ComponentInfo: ComponentInfo;
+
+    /// The platform's section extractor type, used when extracting sections from firmware volumes.
     type Extractor: SectionExtractor;
 
+    /// If true, the platform prioritizes allocating 32-bit memory when not otherwise specified.
     fn prioritize_32_bit_memory() -> bool { false }
 
-    fn section_extractor() -> Self::SectionExtractor;
+    /// Returns an instance of the platform's section extractor when parsing firmware volumes.
+    fn section_extractor() -> Self::Extractor
 
-    fn components(add: &mut Add<Component>) { }
-
-    fn configs(add: &mut Add<Config>) {  }
-
-    fn services(add: &mut Add<Service>) {  }
-
+    /// Specifies teh GIC base addresses for AARCH64 systems.
     #[cfg(target_arch = "aarch64")]
-    fn gic_bases() -> GicBases;
+    fn gic_bases() -> GicBases
 }
 ```
 
@@ -146,12 +175,36 @@ This will introduce changes to the core and how it consumes the trait. An exampl
 ```rust
 pub struct Core<P: Platform> {
     ...
-    _p: PhantomData<P>
+    uefi_state: UefiState<P: Platform>, // `UefiState` to be discussed next.
 }
 
 impl <P: Platform> Core<P> {
     /// This was originally `init_memory`. It is now `start` and the only public function.
-    pub fn start(mut self, physical_hob_list: *const c_void) -> ! {
+    pub fn entry_point(&'static self, physical_hob_list: *const c_void) -> ! {
+        self.init_memory(physical_hob_list)
+
+        P::ComponentInfo::components(Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _limiter: core::marker::PhantdomData,
+        });
+
+        P::ComponentInfo::configs(Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _limiter: core::marker::PhantomData,
+        });
+
+        P::ComponentInfo::services(Add {
+            storage: &mut self.storage,
+            components: &mut self.components,
+            _limiter: core::marker::PhantomData
+        });
+
+        ...
+    }
+
+    fn init_memory(&self) {
         ...
 
         GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
@@ -159,8 +212,7 @@ impl <P: Platform> Core<P> {
         ...
     }
 
-    // This was originally `start`. It is now a method (probably not dispatch) called by `start` above.
-    fn dispatch(&mut self) -> Result<()> {
+    fn start(&mut self) -> Result<()> {
         ...
 
         Self::register_section_extractor(P::section_extractor());
@@ -170,22 +222,20 @@ impl <P: Platform> Core<P> {
 }
 ```
 
-### Creation of the `UefiState` struct
+### Moving statics into the Core
 
-Since we will be moving all of the static state into the Core, we need a clean way to store all of this state. To do
-that, we will create a new struct called `UefiState` to store some of the UEFI related statics (Such as the dispatcher
-context, etc.). Other statics that are more "Kernel-like" in nature will be moved either to a new structure or into the
-Core itself. The decision on where to put each individual static is an implementation detail and will not be decided in
-this RFC. The intent is to specify that we will purposefully organize the statics inside the core instead of having all
+Since we will be moving all of the static state into the Core, we need a clean way to store all of this state. The idea
+is to group statics as seems appropriate, but is left as an implementation detail. For the sake of this RFC, we will
+start with the idea of a new struct called `UefiState` which will store some of the pure UEFI related statics. This
+includes the dispatcher context, and parsed FV data. Other statics, such as the ones more kernel-like in nature will
+ultimetly be moved elsewhere, but again, that is an implementation detail for the sake of this RFC.
 statics sit in the top-level Core struct as fields.
 
-Please note that to reduce the complexity of the PR implementing this RFC, moving things into the Core and away from
-being `static` will happen over multiple PRs. The first one we will do is the dispatcher context, so the example below
-will show the dispatcher context being moved into `UefiState`
-
-Another benefit with this layout is that some of the dyn trait objects currently used in statics (because we cannot
-know the type at compile time) can now be converted to static polymorphism because it is all handled by the types
-specified in the `Platform` trait.
+Please note the application of this RFC will take place over multiple PRs as the complexity introduced by moving these
+statics is quite vast. For this RFC, we will continue to show examples based off the dispatcher_context, as no other
+statics depend directly on it, and it's move into the core is simple compared to the others. Additionally, it allows
+demonstaration of moving a struct that is currently a dynamic trait object (dynamic polymorphism) to static 
+polymorphism decided by platform.
 
 ```rust
 // in lib.rs
@@ -200,24 +250,50 @@ struct Core<P: Platform> {
 }
 ```
 
-### Creation of Atomic Pointer to the Core
+For the most part, the move of a static member into the core is that simple. There is some work to be done to handle
+the `efiapi` methods that previsouly directly access that static, which will be discussed in the next section.
+
+The main difficulty of this move is that we need to perform some analysis to determine the dependency tree between all
+statics in the core. We can only transition the "leaf node" statics* (e.g. the ones that do not have any other statics
+accessing them). If that is impossible in some cases (some type of circular dependency), then the whole circular
+dependency must be moved at once
+
+\* The reason we can only move the leave nodes comes down to an implementation detail that will be discussed in the
+   next section. However the main limitation is that the "efiapi" method must be an associated function of the Core to
+   be able to access the core statically. The reasoning will be discussed below.
+
+### Core UEFI & efiapi function support
 
 The biggest limitation of the Core is that we are compatible with "efiapi" functions, however these functions cross
 the FFI boundary and thus we cannot capture state in lambdas, like is the normal process for getting Sync/Send safe
-data into callbacks. To get around this, we will create a static pointer that holds a reference to our Core, and will
-produce an API interface for accessing this state.
+data into stateless callbacks. To fix this, we create a static, type-erased pointer pointing at our Core. We can then
+access that pointer into our "efiapi" functions. It must be a type-erased pointer because the Core is generic over
+`P` ("Platform"), which ultimetly means the layout in memory of the Core is not known by our crate, only by the binary
+crate using the core.
 
-The next limitation with this process is that we have a `Core` struct with a generic `P` for the platform. Due to this
-the layout of the `Core` is not stable and we cannot safely convert to the `Core` without also knowing `P`. What this
-means is that we must move all "efiapi" functions into the `Core`, which allows static polymorphism to handle knowing
-what `P` is for us (e.g. we can just do `Self::instance()`).
+This is only able to be done because of the general context in which our crate is used. There is only ever going to be
+one `Core<P>` initialized in a given binary, so we can guaruntee that the `Core` in the pointer is our core. To
+continue down the safety conversation, there are also a few extra percautions we take. The first is that the only way
+to set the instance is through the `entry_point` method, which requires that `Self` have a lifetime of `'static`. This
+guaruntees the pointer will always be valid.
+
+The next has to do with mutable aliasing. It is impossible. Since the platform must instantiate the `Core` as a static,
+it must always be immutable (.e.g. not `static mut`). In addition to this, the `instance()` function (which gets the
+static referenced core in the "efiapi" functions), also only returns a reference. What this ultimetly means is that all
+fields in the Core must now have their own interior mutability. For the previously static types, this is no problem.
+They already had that. But it does result in us needing to add some wrapper types around our existing fields. That is
+an implementation detail that will not be discussed here.
+
+Lets take a look at our interface for being able to access the `Core` statically.
+
+**NOTE: The `instance()` method is only to be used by "efiapi" functions registered with the efi system table.**
 
 ```rust
 /// in lib.rs
 static __SELF: AtomicPtr<u8> = AtomicPtr::new(core::ptr::null_mut());
 
 impl <P: Platform> Core {
-    fn set_instance(&'static self) {
+    fn set_instance(&self) {
         let ptr = NonNull::from(self).cast::<u8>().as_ptr();
         __SELF.store(ptr, core::sync::atomic::Ordering::SeqCst);
     }
@@ -230,7 +306,8 @@ impl <P: Platform> Core {
                 .as_ref()
         }
     }
-    pub fn init_memory(&'static self, physical_hob_list: *const c_void) -> &'static self {
+
+    pub fn entry_point(&'static self, physical_hob_list: *const c_void) -> ! {
         self.set_instance();
 
         ...
@@ -238,45 +315,50 @@ impl <P: Platform> Core {
 }
 ```
 
-The next final tidbit which is handy for this implementation is that `impl`'s of a struct do not have to be in the same
-module that the struct is defined. This allows us to scatter `Core<P>` impls throughout the workspace.
+Next, we will talk about the layout of the "efiapi" functions. From here on out, the "efiapi" functions will be simple
+wrappers around a first-class pure-rust implementation. The "efiapi" function will always do the following:
 
-A short and sweet example of how we will implement efiapi functions across the workspace is seen below:
+1. Get the static instance of the core with `Self::instance()`.
+2. Convert any C / UEFI types to rust types (mainly pointers to references, including null checks)
+3. Call the pure rust method.
+
+The pure rust methods will be implemented on the appopriate field of the `Core` (not the `Core` itself) as seems
+appopriate during the implementation, but the "efiapi" method must be implemented directly on the `Core` so that it can
+call `Self::instance()`. Due to the rust module system, we can implement these "efiapi" methods on the `Core` in a
+different module then the `Core` was defined. If these functions are not marked as `pub`, then they will not be
+callable outside of that module, which will be good for preventing users from calling the "efiapi" methods directly.
+
+Here is an example of converting a single "efiapi" function that the dispatcher context owns:
 
 ```rust
-impl <P: Platform> Core {
-    /// This method is public to the entire crate. Anywhere else in the codebase can call this method, so long as it
-    /// has a reference to `Core`.
-    pub(crate) fn trust(handle: efi::Handle, file: &efi::Guid) -> Result<(), EfiError> {
-        let dispatcher = self.uefi_state.dispatcher_context.lock();
-        for driver in dispatcher.pending_drivers.iter_mut() {
+/// In dispatcher.rs
+impl <E: SectionExtractor> Dispatcher<E> {
+    pub fn trust(&mut self, handle: efi::Handle, file: &efi::Guid) -> Result<(), EfiError> {
+        for driver in self.pending_drivers.iter_mut() {
             if driver.firmware_volume_handle == handle && OrdGuid(driver.file_name) == OrdGuid(*file) {
                 driver.security_status = efi::Status::SUCCESS;
-                return Ok(());
+                return Ok(())
             }
         }
         Err(EfiError::NotFound)
     }
+}
 
-    /// This method is only public to the module, but should never be called. It's purpose is only to be registered
-    /// with the system table and called outside of the rust context
+/// In another module, such as systemtables.rs
+impl <P: Platform> Core<P> {
+    #[coverage(off)]
     extern "efiapi" fn trust_efiapi(firmware_volume_handle: efi::Handle, file_name: *const efi::Guid) -> efi::Status {
         if file_name.is_null() {
             return efi::Status::INVALID_PARAMETER;
         }
 
+        // Safety: caller must ensure that file_name is a valid pointer. It is null-checked above.
         let file_name = unsafe { file_name.read_unaligned() };
 
-        match Self::instance().trust(firmware_volume_handle, &file_name) {
+        match Self::instance().uefi_state.dispatcher_context.trust(firmware_volume_handle, &file_name) {
             Err(status) => status.into(),
             Ok(_) => efi::Status::SUCCESS,
         }
-    }
-
-    /// Public to the crate, but should only be called once during Core setup.
-    fn init_dxe_services(system_table: &mut EfiSystemTable) {
-        ...
-        trust: Self::trust_efiapi,
     }
 }
 ```
@@ -284,39 +366,46 @@ impl <P: Platform> Core {
 ### Platform Interface changes
 
 We've now seen all of the core changes. What does the the change look for the platform? The platform now manually
-implements the `Platform` trait. Pretty much all platform config has moved there. That is about it. Lets see the
-example:
+implements the `Platform` trait. The actual name of the struct doing the implementing is an implementation detail of
+the platform implementor. We will just use Q35 as an example.
 
 ```rust
-struct Platform;
+struct Q35;
 
-impl patina::Platform for Platform {
-
-    type Extractor: SectionExtractor = CompositeSectionExtractor;
-
-    fn prioritize_32_bit_memory() -> bool { false }
-
-    fn section_extractor() -> Self::Extractor { CompositeSectionExtractor::default() }
-
-    fn components(add: &mut Add<Component>) {
-        add.add_component(...);
-        add.add_component(...);
-    }
-
-    fn configs(add: &mut Add<Config>) {
-        add.add_config(...);
-    }
-
-    fn services(c: &mut Add<Service>) {
-        add.add_service(...);
+impl Platform for Q35 {
+    type ComponentInfo = Self;
+    type Extractor = CompositeSectionExtractor;
+    
+    fn section_extractor() -> Self::Extractor {
+        CompositeSectionExtractor::default()
     }
 }
 
-static CORE: Core<Platform> = Core::new();
+impl ComponentInfo for Q35 {
+    fn components(mut add: Add<Component>) {
+        add.component(AdvancedLoggerComponent::<Uart16550>::new(&LOGGER));
+        add.component(q35_services::mm_config_provider::MmConfigurationProvider);
+        add.component(q35_services::mm_control::QemuQ35PlatformMmControl::new());
+        add.component(patina_mm::component::sw_mmi_manager::SwMmiManager::new());
+    }
 
+    fn configs(mut add: Add<Config>) {
+        add.config(patina_mm::config::MmCommunicationConfiguration {
+                acpi_base: patina_mm::config::AcpiBase::Mmio(0x0), // Actual ACPI base address will be set during boot
+                cmd_port: patina_mm::config::MmiPort::Smi(0xB2),
+                data_port: patina_mm::config::MmiPort::Smi(0xB3),
+                comm_buffers: vec![],
+            });
+    }
+}
+
+static CORE: Core<Q35> = Core::new();
+
+#[cfg_attr(target_os = "uefi", unsafe(export_name = "efi_main"))]
 pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
     ...
-    CORE.start(physical_hob_list)
+
+    CORE.entry_point(physical_hob_list)
 }
 ```
 
@@ -343,7 +432,7 @@ registered components, configs, or services). Adding components, configs, or ser
 of the pre-rfc implementation by the size of the object + minimal overhead where as with this implementation, almost
 no additional stack frame size was seen.
 
-Additionally, I will note that there will be a very (and I mean very) slight
-performance increase as we certain functionalities (such as the section extractor) move away from dyn trait objects
-and vtable indirection. I want to reiterate that this is incredibly small performance gain. Almost worth not
-mentioning, but I do find it important to at least mention in writing.
+Additionally, I will note that there will be a very (and I mean very) slight performance increase as we certain
+functionalities (such as the section extractor) move away from dyn trait objects and vtable indirection. I want to
+reiterate that this is incredibly small performance gain. Almost worth not mentioning, but I do find it important to at
+least mention in writing.
