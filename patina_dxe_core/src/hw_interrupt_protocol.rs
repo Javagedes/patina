@@ -12,7 +12,7 @@ use arm_gic::{
 };
 use patina::{
     boot_services::{BootServices, StandardBootServices},
-    component::{IntoComponent, params::Config, service::Service},
+    component::{IntoComponent, service::Service},
     guids::{HARDWARE_INTERRUPT_PROTOCOL, HARDWARE_INTERRUPT_PROTOCOL_V2},
     uefi_protocol::ProtocolInterface,
 };
@@ -451,20 +451,23 @@ impl HwInterruptProtocolHandler {
     }
 }
 
-#[derive(IntoComponent, Default)]
+#[derive(IntoComponent)]
 /// A component to install the two hardware interrupt protocols.
-pub(crate) struct HwInterruptProtocolInstaller;
+pub(crate) struct HwInterruptProtocolInstaller(GicBases);
 
 impl HwInterruptProtocolInstaller {
+    pub fn new(gic_bases: GicBases) -> Self {
+        Self(gic_bases)
+    }
+
     fn entry_point(
         self,
         interrupt_manager: Service<dyn InterruptManager>,
-        gic_bases: Config<GicBases>,
         boot_services: StandardBootServices,
     ) -> patina::error::Result<()> {
-        log::info!("GICv3 initializing {:x?}", (gic_bases.0, gic_bases.1));
+        log::info!("GICv3 initializing {:x?}", (self.0.0, self.0.1));
         let aarch64_int = unsafe {
-            AArch64InterruptInitializer::new(gic_bases.0 as _, gic_bases.1 as _)
+            AArch64InterruptInitializer::new(self.0.0 as _, self.0.1 as _)
                 .inspect_err(|_| log::error!("Failed to initialize GICv3"))?
         };
         log::info!("GICv3 initialized");
