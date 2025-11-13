@@ -175,7 +175,7 @@ trait Platform {
 ```
 
 In this, platform owners will be encouraged (via documentation) to place `#[inline(always)]` on the trait
-implementations where applicable to help the compiler with optmiziations.
+implementations where applicable to help the compiler with optimizations.
 
 This will introduce changes to the core and how it consumes the trait. An example is shown below
 
