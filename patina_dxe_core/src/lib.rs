@@ -8,6 +8,7 @@
 //! ```rust
 //! # use core::ffi::c_void;
 //! # use patina_dxe_core::*;
+//! # use patina_ffs_extractors::NullSectionExtractor;
 //! # #[derive(patina::component::IntoComponent, Default)]
 //! # struct ExampleComponent;
 //! # impl ExampleComponent {
@@ -27,19 +28,15 @@
 //! }
 //!
 //! impl Platform for ExamplePlatform {
-//!   type Extractor = patina_ffs_extractors::NullSectionExtractor;
+//!   type Extractor = NullSectionExtractor;
 //!   type ComponentInfo = Self;
 //!
 //!   fn prioritize_32_bit_memory() -> bool {
 //!     true
 //!   }
-//!
-//!   fn section_extractor() -> Self::Extractor {
-//!     patina_ffs_extractors::NullSectionExtractor{}
-//!   }
 //! }
 //!
-//! static CORE: Core<ExamplePlatform> = Core::new();
+//! static CORE: Core<ExamplePlatform> = Core::new(NullSectionExtractor);
 //! ```
 //!
 //! ## License
@@ -257,6 +254,7 @@ impl Default for GicBases {
 /// ```rust
 /// # use core::ffi::c_void;
 /// # use patina_dxe_core::*;
+/// # use patina_ffs_extractors::NullSectionExtractor;
 /// # #[derive(patina::component::IntoComponent, Default)]
 /// # struct ExampleComponent;
 /// # impl ExampleComponent {
@@ -276,7 +274,7 @@ impl Default for GicBases {
 /// }
 ///
 /// impl Platform for ExamplePlatform {
-///   type Extractor = patina_ffs_extractors::NullSectionExtractor;
+///   type Extractor = NullSectionExtractor;
 ///   type ComponentInfo = Self;
 ///
 ///   fn prioritize_32_bit_memory() -> bool {
@@ -284,7 +282,7 @@ impl Default for GicBases {
 ///   }
 /// }
 ///
-/// static CORE: Core<ExamplePlatform> = Core::new();
+/// static CORE: Core<ExamplePlatform> = Core::new(NullSectionExtractor);
 /// ```
 pub struct Core<P: Platform> {
     hob_list: TplMutex<HobList<'static>>,
