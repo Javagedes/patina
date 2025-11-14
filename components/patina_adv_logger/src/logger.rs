@@ -12,7 +12,13 @@
 use crate::memory_log::{self, AdvancedLog, LogEntry};
 use core::{ffi::c_void, marker::Send, ptr};
 use log::Level;
-use patina::{component::service::{Service, perf_timer::ArchTimerFunctionality}, error::EfiError, log::Format, pi::hob::{Hob, PhaseHandoffInformationTable}, serial::SerialIO};
+use patina::{
+    component::service::{Service, perf_timer::ArchTimerFunctionality},
+    error::EfiError,
+    log::Format,
+    pi::hob::{Hob, PhaseHandoffInformationTable},
+    serial::SerialIO,
+};
 use r_efi::efi;
 use spin::Once;
 

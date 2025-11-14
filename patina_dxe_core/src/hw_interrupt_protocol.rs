@@ -452,21 +452,23 @@ impl HwInterruptProtocolHandler {
     }
 }
 
-#[derive(IntoComponent, Default)]
+#[derive(IntoComponent)]
 /// A component to install the two hardware interrupt protocols.
-pub(crate) struct HwInterruptProtocolInstaller;
+pub(crate) struct HwInterruptProtocolInstaller(GicBases);
 
 impl HwInterruptProtocolInstaller {
+    pub fn new(gic_bases: GicBases) -> Self {
+        Self(gic_bases)
+    }
+
     fn entry_point(
         self,
         interrupt_manager: Service<dyn InterruptManager>,
-        gic_bases: Config<GicBases>,
         boot_services: StandardBootServices,
     ) -> patina::error::Result<()> {
-        log::info!("GICv3 initializing {:x?}", (gic_bases.0, gic_bases.1));
+        log::info!("GICv3 initializing {:x?}", (self.0.0, gic_bases.0.1));
         let gic_v3 = unsafe {
-            gic_initialize(gic_bases.0 as _, gic_bases.1 as _)
-                .inspect_err(|_| log::error!("Failed to initialize GICv3"))?
+            gic_initialize(self.0.0 as _, self.0.1 as _).inspect_err(|_| log::error!("Failed to initialize GICv3"))?
         };
         log::info!("GICv3 initialized");
 

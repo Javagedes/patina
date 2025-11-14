@@ -120,7 +120,10 @@ use patina_internal_cpu::{cpu::EfiCpu, interrupts::Interrupts};
 use protocols::PROTOCOL_DB;
 use r_efi::efi;
 
-use crate::{component_dispatcher::ComponentDispatcher, {config_tables::memory_attributes_table, tpl_lock::TplMutex}, perf_timer::PerfTimer};
+use crate::{
+    component_dispatcher::ComponentDispatcher, config_tables::memory_attributes_table, perf_timer::PerfTimer,
+    tpl_lock::TplMutex,
+};
 
 #[doc(hidden)]
 #[macro_export]
@@ -186,6 +189,14 @@ pub trait Platform {
 
     /// Returns an instance of the platform's section extractor.
     fn section_extractor() -> Self::Extractor;
+
+    /// Returns the performance timer frequency for the platform.
+    ///
+    /// By default, this returns `None`, indicating that the core should attempt to determine the frequency
+    /// automatically using cpu architecture-specific methods.
+    fn timer_requency() -> Option<u64> {
+        None
+    }
 
     /// Informs the core of the GIC base addresses for AARCH64 systems.
     #[cfg(target_arch = "aarch64")]
@@ -290,7 +301,6 @@ impl Default for GicBases {
 pub struct Core<P: Platform> {
     hob_list: TplMutex<HobList<'static>>,
     component_dispatcher: TplMutex<ComponentDispatcher>,
-    platform_timer: PerfTimer,
     _marker: core::marker::PhantomData<P>,
 }
 
@@ -308,7 +318,6 @@ impl<P: Platform> Core<P> {
         Self {
             component_dispatcher: ComponentDispatcher::new_locked(),
             hob_list: TplMutex::new(efi::TPL_NOTIFY, HobList::new(), "HobList"),
-            platform_timer: PerfTimer::new(),
             _marker: core::marker::PhantomData,
         }
     }
@@ -382,6 +391,7 @@ impl<P: Platform> Core<P> {
         self.component_dispatcher.lock().add_service(cpu);
         self.component_dispatcher.lock().add_service(interrupt_manager);
         self.component_dispatcher.lock().add_service(CoreMemoryManager);
+        self.component_dispatcher.lock().add_service(PerfTimer::with_frequency(P::timer_requency().unwrap_or(0)));
     }
 
     /// Performs a combined dispatch of Patina components and UEFI drivers.
@@ -504,7 +514,10 @@ impl<P: Platform> Core<P> {
         dispatcher.insert_component(0, systemtables::SystemTableChecksumInstaller::default().into_component());
         dispatcher.insert_component(0, cpu_arch_protocol::CpuArchProtocolInstaller::default().into_component());
         #[cfg(all(target_os = "uefi", target_arch = "aarch64"))]
-        dispatcher.insert_component(0, hw_interrupt_protocol::HwInterruptProtocolInstaller::default().into_component());
+        dispatcher.insert_component(
+            0,
+            hw_interrupt_protocol::HwInterruptProtocolInstaller::new(P::gic_bases()).into_component(),
+        );
     }
 
     /// Starts the core, dispatching all drivers.
@@ -597,19 +610,5 @@ fn call_bds() {
             // if it never returns: then an operating system or a system utility have been invoked.
             ((*bds).entry)(bds);
         }
-    }
-}
-
-#[cfg(test)]
-#[coverage(off)]
-mod tests {
-    use crate::Core;
-
-    #[test]
-    fn test_core_with_frequency() {
-        let frequency = 12345678;
-        let core = Core::default().init_timer_frequency(Some(frequency));
-
-        assert!(core.platform_timer.get_stored_frequency() == frequency);
     }
 }
