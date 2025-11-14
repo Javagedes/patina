@@ -194,7 +194,7 @@ pub trait Platform {
     ///
     /// By default, this returns `None`, indicating that the core should attempt to determine the frequency
     /// automatically using cpu architecture-specific methods.
-    fn timer_requency() -> Option<u64> {
+    fn timer_frequency() -> Option<u64> {
         None
     }
 
@@ -391,7 +391,7 @@ impl<P: Platform> Core<P> {
         self.component_dispatcher.lock().add_service(cpu);
         self.component_dispatcher.lock().add_service(interrupt_manager);
         self.component_dispatcher.lock().add_service(CoreMemoryManager);
-        self.component_dispatcher.lock().add_service(PerfTimer::with_frequency(P::timer_requency().unwrap_or(0)));
+        self.component_dispatcher.lock().add_service(PerfTimer::with_frequency(P::timer_frequency().unwrap_or(0)));
     }
 
     /// Performs a combined dispatch of Patina components and UEFI drivers.
