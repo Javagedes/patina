@@ -160,10 +160,6 @@ pub(crate) static GCD: SpinLockedGcd = SpinLockedGcd::new(Some(events::gcd_map_c
 ///
 ///   type ComponentInfo = Self;
 ///
-///   fn section_extractor() -> Self::Extractor {
-///     patina_ffs_extractors::NullSectionExtractor{}
-///   }
-///
 ///   fn prioritize_32_bit_memory() -> bool {
 ///     true
 ///   }
@@ -175,8 +171,10 @@ pub(crate) static GCD: SpinLockedGcd = SpinLockedGcd::new(Some(events::gcd_map_c
 pub trait Platform {
     /// The Platform component information type.
     type ComponentInfo: ComponentInfo;
+
     /// The platform's section extractor type, used when extracting sections from firmware volumes.
-    type Extractor: SectionExtractor + 'static;
+    type Extractor: SectionExtractor;
+
     /// Informs the core that it should prioritize allocating 32-bit memory when
     /// not otherwise specified.
     ///
@@ -186,9 +184,6 @@ pub trait Platform {
     fn prioritize_32_bit_memory() -> bool {
         false
     }
-
-    /// Returns an instance of the platform's section extractor.
-    fn section_extractor() -> Self::Extractor;
 
     /// Returns the performance timer frequency for the platform.
     ///
@@ -218,9 +213,6 @@ pub trait Platform {
 ///   # type Extractor = patina_ffs_extractors::NullSectionExtractor;
 ///   # type ComponentInfo = Self;
 ///
-///   # fn section_extractor() -> Self::Extractor {
-///   #  patina_ffs_extractors::NullSectionExtractor{}
-///   # }
 ///   # #[cfg(target_arch = "aarch64")]
 ///   fn gic_bases() -> GicBases {
 ///     GicBases::new(0x1E000000, 0x1E010000)
@@ -290,10 +282,6 @@ impl Default for GicBases {
 ///   fn prioritize_32_bit_memory() -> bool {
 ///     true
 ///   }
-///
-///   fn section_extractor() -> Self::Extractor {
-///     patina_ffs_extractors::NullSectionExtractor{}
-///   }
 /// }
 ///
 /// static CORE: Core<ExamplePlatform> = Core::new();
@@ -301,24 +289,19 @@ impl Default for GicBases {
 pub struct Core<P: Platform> {
     hob_list: TplMutex<HobList<'static>>,
     component_dispatcher: TplMutex<ComponentDispatcher>,
-    _marker: core::marker::PhantomData<P>,
+    // NOTE: This field will be moved into the `DISPATCHER_CONTEXT` when it is moved into the Core.
+    section_extractor: P::Extractor,
 }
 
 unsafe impl<P: Platform> Sync for Core<P> {}
 
-impl<P: Platform> Default for Core<P> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<P: Platform> Core<P> {
     /// Creates a new instance of the DXE Core in the NoAlloc phase.
-    pub const fn new() -> Self {
+    pub const fn new(section_extractor: P::Extractor) -> Self {
         Self {
             component_dispatcher: ComponentDispatcher::new_locked(),
             hob_list: TplMutex::new(efi::TPL_NOTIFY, HobList::new(), "HobList"),
-            _marker: core::marker::PhantomData,
+            section_extractor,
         }
     }
 
@@ -521,7 +504,7 @@ impl<P: Platform> Core<P> {
     }
 
     /// Starts the core, dispatching all drivers.
-    pub fn start(&self, physical_hob_list: *const c_void) -> Result<()> {
+    pub fn start(&'static self, physical_hob_list: *const c_void) -> Result<()> {
         log::info!("Registering platform components");
         self.add_platform_components();
         log::info!("Finished.");
@@ -538,9 +521,8 @@ impl<P: Platform> Core<P> {
         self.component_dispatcher.lock().insert_hobs(&self.hob_list.lock());
         log::info!("Finished.");
 
-        let extractor = Box::leak(Box::new(P::section_extractor()));
-        dispatcher::register_section_extractor(extractor);
-        fv::register_section_extractor(extractor);
+        dispatcher::register_section_extractor(&self.section_extractor);
+        fv::register_section_extractor(&self.section_extractor);
 
         log::info!("Parsing FVs from FV HOBs");
         fv::parse_hob_fvs(&self.hob_list.lock())?;

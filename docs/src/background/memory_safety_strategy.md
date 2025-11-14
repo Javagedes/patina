@@ -196,13 +196,9 @@ impl ComponentInfo for ExamplePlatform {
 impl Platform for ExamplePlatform {
   type ComponentInfo = Self;
   type Extractor = LzmaSectionExtractor;
-
-  fn section_extractor() -> Self::Extractor {
-    LzmaSectionExtractor::default()
-  }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(LzmaSectionExtractor);
 ```
 
 ##### Monolithic Compilation Benefits

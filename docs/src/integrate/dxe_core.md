@@ -217,13 +217,9 @@ impl ComponentInfo for ExamplePlatform { }
 impl Platform for ExamplePlatform {
     type ComponentInfo = Self;
     type Extractor = BrotliSectionExtractor;
-
-    fn section_extractor() -> Self::Extractor {
-        BrotliSectionExtractor::default()
-    }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(BrotliSectionExtractor);
 
 #[cfg_attr(target_os = "uefi", export_name = "efi_main")]
 pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
@@ -326,13 +322,9 @@ impl ComponentInfo for ExamplePlatform { }
 impl Platform for ExamplePlatform {
     type ComponentInfo = Self;
     type Extractor = BrotliSectionExtractor;
-
-    fn section_extractor() -> Self::Extractor {
-        BrotliSectionExtractor::default()
-    }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(BrotliSectionExtractor);
 
 #[cfg_attr(target_os = "uefi", export_name = "efi_main")]
 pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
@@ -412,14 +404,13 @@ use patina_dxe_core::*;
 impl Platform for ExamplePlatform {
     # type Extractor = BrotliSectionExtractor;
     # type ComponentInfo = Self;
-    # fn section_extractor() -> Self::Extractor { BrotliSectionExtractor::default() }
     #[cfg(target_arch = "aarch64")]
     fn gic_bases() -> GicBases {
         GicBases::new(0x40060000, 0x40080000) // Update for your platform
     }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(BrotliSectionExtractor);
 ```
 
 ### 7.3 Performance Monitoring (Optional)
@@ -545,13 +536,9 @@ impl ComponentInfo for ExamplePlatform {
 impl Platform for ExamplePlatform {
     type ComponentInfo = Self;
     type Extractor = BrotliSectionExtractor;
-
-    fn section_extractor() -> Self::Extractor {
-        BrotliSectionExtractor::default()
-    }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(BrotliSectionExtractor);
 
 #[cfg_attr(target_os = "uefi", export_name = "efi_main")]
 pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
@@ -605,11 +592,10 @@ impl ComponentInfo for ExamplePlatform { }
 impl Platform for ExamplePlatform {
     # type Extractor = BrotliSectionExtractor;
     # type ComponentInfo = Self;
-    # fn section_extractor() -> Self::Extractor { BrotliSectionExtractor::default() }
     fn prioritize_32_bit_memory() -> bool { true }
 }
 
-static CORE: Core<ExamplePlatform> = Core::new();
+static CORE: Core<ExamplePlatform> = Core::new(BrotliSectionExtractor);
 ```
 
 ```admonish warning

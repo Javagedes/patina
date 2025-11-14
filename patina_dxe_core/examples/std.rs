@@ -15,6 +15,7 @@ use patina::pi::{
     hob::{self, ResourceDescriptorV2, header},
 };
 use patina_dxe_core::Core;
+use patina_ffs_extractors::CompositeSectionExtractor;
 use r_efi::efi;
 use std::ffi::c_void;
 
@@ -38,15 +39,11 @@ impl patina_dxe_core::Platform for StdPlatform {
     fn prioritize_32_bit_memory() -> bool {
         true
     }
-
-    fn section_extractor() -> Self::Extractor {
-        patina_ffs_extractors::CompositeSectionExtractor::default()
-    }
 }
 
 impl patina_dxe_core::ComponentInfo for StdPlatform {}
 
-static mut CORE: Core<StdPlatform> = Core::new();
+static mut CORE: Core<StdPlatform> = Core::new(CompositeSectionExtractor::new());
 
 fn main() -> patina::error::Result<()> {
     if log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Trace)).is_err() {

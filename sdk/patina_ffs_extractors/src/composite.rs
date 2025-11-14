@@ -31,6 +31,13 @@ pub struct CompositeSectionExtractor {
 
 impl Default for CompositeSectionExtractor {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompositeSectionExtractor {
+    /// Creates a new instance of the composite section extractor.
+    pub const fn new() -> Self {
         Self {
             #[cfg(feature = "brotli")]
             brotli: BrotliSectionExtractor {},
