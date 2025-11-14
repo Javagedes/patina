@@ -148,38 +148,61 @@ Patina compiles all components into a single binary:
 
 ```rust,no_run
 # extern crate patina_dxe_core;
+# extern crate patina;
+# extern crate patina_ffs_extractors;
+# use patina::component::IntoComponent;
+# use patina_ffs_extractors::LzmaSectionExtractor;
 # // Note: Begin mock types for compilation
 # #[derive(Default)]
 # struct PlatformConfig {
 #     secure_boot: bool,
 # }
+# #[derive(IntoComponent)]
 # struct MemoryManagerComponent;
 # impl MemoryManagerComponent {
 #     fn new() -> Self { MemoryManagerComponent }
+#    fn entry_point(self) -> patina::error::Result<()> { Ok(()) }
 # }
+# #[derive(IntoComponent)]
 # struct SecurityPolicyComponent;
 # impl SecurityPolicyComponent {
 #    fn new() -> Self { SecurityPolicyComponent }
+#    fn entry_point(self) -> patina::error::Result<()> { Ok(()) }
 # }
+# #[derive(IntoComponent)]
 # struct DeviceDriverComponent;
 # impl DeviceDriverComponent {
 #    fn new() -> Self { DeviceDriverComponent }
+#    fn entry_point(self) -> patina::error::Result<()> { Ok(()) }
 # }
-# let physical_hob_list = core::ptr::null();
 # // Note: End mock types for compilation
 
-use patina_dxe_core::Core;
+use patina_dxe_core::*;
 
- Core::default()
-    .init_memory(physical_hob_list)
-    .with_config(PlatformConfig { secure_boot: true })
-    // Choose components here
-    // .with_component(MemoryManagerComponent::new())
-    // .with_component(SecurityPolicyComponent::new())
-    // .with_component(DeviceDriverComponent::new())
-    .start()
-    .unwrap();
+struct ExamplePlatform;
 
+impl ComponentInfo for ExamplePlatform {
+  fn configs(mut add: Add<Config>) {
+    add.config(PlatformConfig { secure_boot: true });
+  }
+
+  fn components(mut add: Add<Component>) {
+    add.component(MemoryManagerComponent::new());
+    add.component(SecurityPolicyComponent::new());
+    add.component(DeviceDriverComponent::new());
+  }
+}
+
+impl Platform for ExamplePlatform {
+  type ComponentInfo = Self;
+  type Extractor = LzmaSectionExtractor;
+
+  fn section_extractor() -> Self::Extractor {
+    LzmaSectionExtractor::default()
+  }
+}
+
+static CORE: Core<ExamplePlatform> = Core::new();
 ```
 
 ##### Monolithic Compilation Benefits
