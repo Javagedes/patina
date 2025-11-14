@@ -165,9 +165,6 @@ trait Platform {
     #[inline(always)]
     fn prioritize_32_bit_memory() -> bool { false }
 
-    /// Returns an instance of the platform's section extractor when parsing firmware volumes.
-    fn section_extractor() -> Self::Extractor;
-
     /// Specifies the GIC base addresses for AARCH64 systems.
     #[cfg(target_arch = "aarch64")]
     fn gic_bases() -> GicBases;
@@ -215,14 +212,6 @@ impl <P: Platform> Core<P> {
         ...
 
         GCD.prioritize_32_bit_memory(P::prioritize_32_bit_memory());
-
-        ...
-    }
-
-    fn start(&mut self) -> Result<()> {
-        ...
-
-        Self::register_section_extractor(P::section_extractor());
 
         ...
     }
@@ -382,10 +371,6 @@ struct Q35;
 impl Platform for Q35 {
     type ComponentInfo = Self;
     type Extractor = CompositeSectionExtractor;
-    
-    fn section_extractor() -> Self::Extractor {
-        CompositeSectionExtractor::default()
-    }
 }
 
 impl ComponentInfo for Q35 {
@@ -406,7 +391,7 @@ impl ComponentInfo for Q35 {
     }
 }
 
-static CORE: Core<Q35> = Core::new();
+static CORE: Core<Q35> = Core::new(CompositeSectionExtractor::new());
 
 #[cfg_attr(target_os = "uefi", unsafe(export_name = "efi_main"))]
 pub extern "efiapi" fn _start(physical_hob_list: *const c_void) -> ! {
