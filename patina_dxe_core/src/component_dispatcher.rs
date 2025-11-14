@@ -51,10 +51,7 @@ pub struct Service;
 
 /// A struct used to allow controlled access to the Core's storage.
 pub struct Add<'a, L> {
-    // /// The storage to manipulate.
-    // storage: &'a mut Storage,
-    // /// The list of components that can be added to.
-    // components: &'a mut Vec<Box<dyn patina::component::Component>>,
+    /// The component dispatcher to add to.
     pub dispatcher: &'a mut ComponentDispatcher,
     /// Marker to limit what methods are available on this struct.
     _limiter: core::marker::PhantomData<L>,

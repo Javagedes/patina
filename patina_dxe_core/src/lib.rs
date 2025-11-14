@@ -236,16 +236,17 @@ impl Default for GicBases {
 ///
 /// This struct is generic over two traits:
 ///
-/// 1. [CoreConfig]: This trait exposes the platform-specific configuration options used directly by the DXE Core.
-///    Associated types and methods within this trait provide configuration values that influence the behavior that may
-///    be different between platforms, such as the prioritization of 32-bit memory allocations. It may also specify
-///    associated types that define platform-specific implementations such as a SectionExtractor implementation.
+/// 1. [ComponentInfo]: This trait exposes the platform-specific configuration options used directly by the DXE Core.
+///    Associated types and methods within this trait provide configuration values that influence the behavior that
+///    may be different between platforms, such as the prioritization of 32-bit memory allocations. It may also
+///    specify associated types that define platform-specific implementations such as a SectionExtractor
+///    implementation.
 /// 2. [Platform]: This trait provides callbacks for the platform to register additional patina components,
 ///    configurations and services that will be dispatched and made available during the DXE phase. These callbacks
 ///    will not influence core behavior directly, but allows the platform to attach dispatchable drivers and configure
 ///    them.
 ///
-/// To properly use this struct, the platform must implement both the [CoreConfig] and [Platform] traits, then create
+/// To properly use this struct, the platform must implement both the [ComponentInfo] and [Platform] traits, then create
 /// a static instance of the [Core] struct with the platform types as generic parameters (See example below). From
 /// there, simply call the [entry_point](Core::entry_point) method within the main function to start the DXE Core.
 ///
