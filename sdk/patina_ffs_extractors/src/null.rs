@@ -9,6 +9,7 @@
 use alloc::vec::Vec;
 use patina_ffs::{FirmwareFileSystemError, section::SectionExtractor};
 
+/// A section extractor that always returns Unsupported.
 pub struct NullSectionExtractor;
 
 impl SectionExtractor for NullSectionExtractor {
