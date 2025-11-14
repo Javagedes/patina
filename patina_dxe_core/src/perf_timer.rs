@@ -88,6 +88,7 @@ pub(crate) fn arch_cpu_count() -> u64 {
 /// Skip coverage as any value could be valid, including 0.
 #[coverage(off)]
 pub(crate) fn arch_perf_frequency() -> u64 {
+    #[allow(unused_assignments)]
     let mut frequency = 0u64;
 
     // Try to get TSC frequency from CPUID (most Intel and AMD platforms).

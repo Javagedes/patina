@@ -13,7 +13,7 @@ use arm_gic::{
 };
 use patina::{
     boot_services::{BootServices, StandardBootServices},
-    component::{IntoComponent, params::Config, service::Service},
+    component::{IntoComponent, service::Service},
     guids::{HARDWARE_INTERRUPT_PROTOCOL, HARDWARE_INTERRUPT_PROTOCOL_V2},
     uefi_protocol::ProtocolInterface,
 };
@@ -466,7 +466,7 @@ impl HwInterruptProtocolInstaller {
         interrupt_manager: Service<dyn InterruptManager>,
         boot_services: StandardBootServices,
     ) -> patina::error::Result<()> {
-        log::info!("GICv3 initializing {:x?}", (self.0.0, gic_bases.0.1));
+        log::info!("GICv3 initializing {:x?}", (self.0.0, self.0.1));
         let gic_v3 = unsafe {
             gic_initialize(self.0.0 as _, self.0.1 as _).inspect_err(|_| log::error!("Failed to initialize GICv3"))?
         };
