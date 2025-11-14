@@ -255,14 +255,21 @@ where
 #[cfg(test)]
 #[coverage(off)]
 mod tests {
+    use core::{ffi::c_void, ptr};
+
     use alloc::boxed::Box;
     use patina::{
         component::service::{IntoService, perf_timer::ArchTimerFunctionality},
         log::Format,
+        pi::hob::{GUID_EXTENSION, GuidHob, header},
         serial::uart::UartNull,
     };
+    use r_efi::efi;
 
-    use crate::logger::AdvancedLogger;
+    use crate::{
+        logger::AdvancedLogger,
+        memory_log::{self, AdvancedLog},
+    };
 
     #[derive(IntoService)]
     #[service(dyn ArchTimerFunctionality)]
@@ -290,5 +297,51 @@ mod tests {
 
         logger_uninit.init_timer(patina::component::service::Service::mock(Box::new(MockTimer {})));
         assert!(logger_uninit.timer.get().is_some());
+    }
+
+    static TEST_LOGGER: AdvancedLogger<UartNull> =
+        AdvancedLogger::new(patina::log::Format::Standard, &[], log::LevelFilter::Trace, UartNull {});
+
+    fn create_adv_logger_hob_list() -> *const c_void {
+        const LOG_LEN: usize = 0x2000;
+        let log_buff = Box::into_raw(Box::new([0_u8; LOG_LEN]));
+        let log_address = log_buff as *const u8 as efi::PhysicalAddress;
+
+        // initialize the log so it's valid for the hob list
+        //
+        // SAFETY: We just allocated this memory so it's valid.
+        unsafe { AdvancedLog::initialize_memory_log(log_address, LOG_LEN as u32) };
+
+        const HOB_LEN: usize = size_of::<GuidHob>() + size_of::<efi::PhysicalAddress>();
+        let hob_buff = Box::into_raw(Box::new([0_u8; HOB_LEN]));
+        let hob = hob_buff as *mut GuidHob;
+
+        // SAFETY: We just allocated this memory so it's valid.
+        unsafe {
+            ptr::write(
+                hob,
+                GuidHob {
+                    header: header::Hob { r#type: GUID_EXTENSION, length: HOB_LEN as u16, reserved: 0 },
+                    name: memory_log::ADV_LOGGER_HOB_GUID,
+                },
+            )
+        };
+
+        // SAFETY: Space for the additional physical address was explicitly allocated.
+        let address: *mut efi::PhysicalAddress = unsafe { hob.add(1) } as *mut efi::PhysicalAddress;
+        // SAFETY: There is space for this address, writing it out of the structure as the C implementation does.
+        unsafe { (*address) = log_address };
+        hob_buff as *const c_void
+    }
+
+    #[test]
+    fn component_test() {
+        let hob_list = create_adv_logger_hob_list();
+
+        // SAFETY: The hob list created is valid for this test.
+        let res = unsafe { TEST_LOGGER.init_advanced_logger(hob_list) };
+        assert_eq!(res, Ok(()));
+
+        // TODO: Need to mock the protocol interface but requires final component interface.
     }
 }
