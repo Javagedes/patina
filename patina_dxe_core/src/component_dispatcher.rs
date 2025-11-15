@@ -244,10 +244,22 @@ impl ComponentDispatcher {
 }
 
 #[cfg(test)]
+#[coverage(off)]
 mod tests {
     use patina::pi::hob::GuidHob;
 
     use super::*;
+
+    #[test]
+    fn test_component_info_trait_is_implemented() {
+        struct Test;
+
+        impl ComponentInfo for Test {}
+
+        let mut dispatcher = ComponentDispatcher::new();
+        dispatcher.apply_component_info::<Test>();
+        assert!(dispatcher.components.is_empty());
+    }
 
     #[test]
     fn test_add_struct_correctly_applies_changes_to_storage() {
@@ -304,8 +316,10 @@ mod tests {
 
         const GUID_STR1: &str = "00000000-0000-0000-0000-000000000001";
         const GUID_STR2: &str = "00000000-0000-0000-0000-000000000002";
+        const GUID_STR3: &str = "00000000-0000-0000-0000-000000000003";
         const GUID1: patina::BinaryGuid = patina::BinaryGuid::from_string(GUID_STR1);
         const GUID2: patina::BinaryGuid = patina::BinaryGuid::from_string(GUID_STR2);
+        const GUID3: patina::BinaryGuid = patina::BinaryGuid::from_string(GUID_STR3);
         const HOB1_VALUE: u32 = 1234;
         const HOB2_VALUE: u64 = 56789;
 
@@ -323,10 +337,18 @@ mod tests {
             value: u64,
         }
 
+        #[derive(FromBytes, IntoBytes, Immutable, PartialEq, patina::component::hob::FromHob)]
+        #[hob = "00000000-0000-0000-0000-000000000003"]
+        struct TestHob3 {
+            value: u128,
+        }
+
         let hob1 = TestHob1 { value: HOB1_VALUE };
         let hob2 = TestHob2 { value: HOB2_VALUE };
+        let hob3 = TestHob3 { value: 9876543210 };
         let hob1_bytes = &hob1.as_bytes();
         let hob2_bytes = &hob2.as_bytes();
+        let hob3_bytes = &hob3.as_bytes();
 
         let guid_hob1 = GuidHob {
             header: patina::pi::hob::header::Hob {
@@ -346,8 +368,18 @@ mod tests {
             name: *GUID2,
         };
 
+        let guid_hob3 = GuidHob {
+            header: patina::pi::hob::header::Hob {
+                r#type: patina::pi::hob::GUID_EXTENSION,
+                length: core::mem::size_of::<TestHob3>() as u16,
+                reserved: 0,
+            },
+            name: *GUID3,
+        };
+
         hob_list.push(patina::pi::hob::Hob::GuidHob(&guid_hob1, hob1_bytes));
         hob_list.push(patina::pi::hob::Hob::GuidHob(&guid_hob2, hob2_bytes));
+        hob_list.push(patina::pi::hob::Hob::GuidHob(&guid_hob3, hob3_bytes));
         hob_list.push(patina::pi::hob::Hob::Misc(30)); // Non-guid HOB to ensure it's ignored.
 
         #[derive(patina::component::IntoComponent)]
