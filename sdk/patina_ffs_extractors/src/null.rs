@@ -13,6 +13,7 @@ use patina_ffs::{FirmwareFileSystemError, section::SectionExtractor};
 pub struct NullSectionExtractor;
 
 impl SectionExtractor for NullSectionExtractor {
+    #[coverage(off)]
     fn extract(&self, _: &patina_ffs::section::Section) -> Result<Vec<u8>, FirmwareFileSystemError> {
         Err(FirmwareFileSystemError::Unsupported)
     }

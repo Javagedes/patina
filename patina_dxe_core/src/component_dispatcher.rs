@@ -109,6 +109,12 @@ impl ComponentDispatcher {
         Self { components: Vec::new(), storage: Storage::new() }
     }
 
+    pub fn apply_component_info<C: ComponentInfo>(&mut self) {
+        C::configs(Add::new(self));
+        C::services(Add::new(self));
+        C::components(Add::new(self));
+    }
+
     /// Inserts a component at the given index. If no index is provided, the component is added to the end of the list.
     pub(crate) fn insert_component(&mut self, idx: usize, mut component: Box<dyn patina::component::Component>) {
         component.initialize(&mut self.storage);
@@ -116,11 +122,14 @@ impl ComponentDispatcher {
     }
 
     /// Adds a service to storage.
+    #[coverage(off)]
     #[inline(always)]
     pub(crate) fn add_service<S: IntoService + 'static>(&mut self, service: S) {
         self.storage.add_service(service);
     }
 
+    /// Locks the configurations in storage, preventing further modifications.
+    #[coverage(off)]
     #[inline(always)]
     pub(crate) fn lock_configs(&mut self) {
         self.storage.lock_configs();
@@ -131,6 +140,7 @@ impl ComponentDispatcher {
     /// ## Safety
     ///
     /// The caller must ensure that the provided pointer will live for the lifetime of the DXE Core.
+    #[coverage(off)]
     #[inline(always)]
     pub(crate) unsafe fn set_boot_services(&mut self, mut bs: NonNull<efi::BootServices>) {
         unsafe {
@@ -143,6 +153,7 @@ impl ComponentDispatcher {
     /// ## Safety
     ///
     /// The caller must ensure that the provided pointer will live for the lifetime of the DXE Core.
+    #[coverage(off)]
     #[inline(always)]
     pub(crate) unsafe fn set_runtime_services(&mut self, mut rs: NonNull<efi::RuntimeServices>) {
         unsafe {
@@ -151,7 +162,7 @@ impl ComponentDispatcher {
     }
 
     /// Parses the HOB list producing a `Hob\<T\>` struct for each guided HOB found with a registered parser.
-    pub(crate) fn insert_hobs(&mut self, hob_list: &HobList<'static>) {
+    pub(crate) fn insert_hobs(&mut self, hob_list: &HobList<'_>) {
         for hob in hob_list.iter() {
             if let patina::pi::hob::Hob::GuidHob(guid, data) = hob {
                 let parser_funcs = self.storage.get_hob_parsers(&patina::OwnedGuid::from(guid.name));
@@ -229,5 +240,179 @@ impl ComponentDispatcher {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use patina::pi::hob::GuidHob;
+
+    use super::*;
+
+    #[test]
+    fn test_add_struct_correctly_applies_changes_to_storage() {
+        struct Test;
+
+        /// A test service and implementation so we can add it via the Add<Service> struct
+        /// and verify it was added to storage.
+        trait TestService {}
+
+        #[derive(patina::component::service::IntoService)]
+        #[service(dyn TestService)]
+        struct TestServiceImpl;
+
+        impl TestService for TestServiceImpl {}
+
+        #[derive(patina::component::IntoComponent)]
+        struct TestComponent;
+
+        impl TestComponent {
+            fn entry_point(self) -> patina::error::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl ComponentInfo for Test {
+            fn configs(mut add: Add<Config>) {
+                add.config(42u32);
+            }
+
+            fn services(mut add: Add<Service>) {
+                add.service(TestServiceImpl);
+            }
+
+            fn components(mut add: Add<Component>) {
+                add.component(TestComponent);
+            }
+        }
+
+        let mut dispatcher = ComponentDispatcher::new();
+        assert!(dispatcher.storage.get_config::<u32>().is_none());
+        assert!(dispatcher.storage.get_service::<dyn TestService>().is_none());
+        assert!(dispatcher.components.is_empty());
+
+        dispatcher.apply_component_info::<Test>();
+
+        assert!(dispatcher.storage.get_config::<u32>().is_some());
+        assert!(dispatcher.storage.get_service::<dyn TestService>().is_some());
+        assert_eq!(dispatcher.components.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_hob_list_into_storage() {
+        use zerocopy::{FromBytes, Immutable, IntoBytes};
+
+        const GUID_STR1: &str = "00000000-0000-0000-0000-000000000001";
+        const GUID_STR2: &str = "00000000-0000-0000-0000-000000000002";
+        const GUID1: patina::BinaryGuid = patina::BinaryGuid::from_string(GUID_STR1);
+        const GUID2: patina::BinaryGuid = patina::BinaryGuid::from_string(GUID_STR2);
+        const HOB1_VALUE: u32 = 1234;
+        const HOB2_VALUE: u64 = 56789;
+
+        let mut hob_list = HobList::new();
+
+        #[derive(FromBytes, IntoBytes, Immutable, PartialEq, patina::component::hob::FromHob)]
+        #[hob = "00000000-0000-0000-0000-000000000001"]
+        struct TestHob1 {
+            value: u32,
+        }
+
+        #[derive(FromBytes, IntoBytes, Immutable, PartialEq, patina::component::hob::FromHob)]
+        #[hob = "00000000-0000-0000-0000-000000000002"]
+        struct TestHob2 {
+            value: u64,
+        }
+
+        let hob1 = TestHob1 { value: HOB1_VALUE };
+        let hob2 = TestHob2 { value: HOB2_VALUE };
+        let hob1_bytes = &hob1.as_bytes();
+        let hob2_bytes = &hob2.as_bytes();
+
+        let guid_hob1 = GuidHob {
+            header: patina::pi::hob::header::Hob {
+                r#type: patina::pi::hob::GUID_EXTENSION,
+                length: core::mem::size_of::<TestHob1>() as u16,
+                reserved: 0,
+            },
+            name: *GUID1,
+        };
+
+        let guid_hob2 = GuidHob {
+            header: patina::pi::hob::header::Hob {
+                r#type: patina::pi::hob::GUID_EXTENSION,
+                length: core::mem::size_of::<TestHob2>() as u16,
+                reserved: 0,
+            },
+            name: *GUID2,
+        };
+
+        hob_list.push(patina::pi::hob::Hob::GuidHob(&guid_hob1, hob1_bytes));
+        hob_list.push(patina::pi::hob::Hob::GuidHob(&guid_hob2, hob2_bytes));
+        hob_list.push(patina::pi::hob::Hob::Misc(30)); // Non-guid HOB to ensure it's ignored.
+
+        #[derive(patina::component::IntoComponent)]
+        struct TestComponent;
+
+        impl TestComponent {
+            fn entry_point(
+                self,
+                hob1: patina::component::hob::Hob<TestHob1>,
+                hob2: patina::component::hob::Hob<TestHob2>,
+            ) -> patina::error::Result<()> {
+                assert_eq!(hob1.value, HOB1_VALUE);
+                assert_eq!(hob2.value, HOB2_VALUE);
+                Ok(())
+            }
+        }
+
+        let mut dispatcher = ComponentDispatcher::default();
+        dispatcher.insert_component(0, TestComponent.into_component());
+        dispatcher.insert_hobs(&hob_list);
+
+        assert!(dispatcher.dispatch());
+    }
+
+    #[test]
+    #[should_panic(expected = "Re-entrant locks for \"ComponentDispatcher\" not permitted.")]
+    fn test_reentrant_lock_correctly_displays_name() {
+        let dispatcher = ComponentDispatcher::new_locked();
+        let _lock = dispatcher.lock();
+        dispatcher.lock();
+    }
+
+    #[test]
+    fn test_dispatch_missing_shows_not_dispatched() {
+        #[derive(patina::component::IntoComponent)]
+        struct TestComponent;
+
+        trait TestService {}
+
+        impl TestComponent {
+            fn entry_point(self, _: patina::component::service::Service<dyn TestService>) -> patina::error::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut dispatcher = ComponentDispatcher::default();
+        dispatcher.insert_component(0, TestComponent.into_component());
+        assert!(!dispatcher.dispatch());
+        dispatcher.display_not_dispatched();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_error_in_component_debug_asserts() {
+        #[derive(patina::component::IntoComponent)]
+        struct TestComponent;
+
+        impl TestComponent {
+            fn entry_point(self) -> patina::error::Result<()> {
+                Err(patina::error::EfiError::Unsupported)
+            }
+        }
+
+        let mut dispatcher = ComponentDispatcher::default();
+        dispatcher.insert_component(0, TestComponent.into_component());
+        dispatcher.dispatch();
     }
 }

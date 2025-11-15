@@ -294,6 +294,7 @@ pub struct Core<P: Platform> {
 
 unsafe impl<P: Platform> Sync for Core<P> {}
 
+#[coverage(off)]
 impl<P: Platform> Core<P> {
     /// Creates a new instance of the DXE Core in the NoAlloc phase.
     pub const fn new(section_extractor: P::Extractor) -> Self {
@@ -478,14 +479,9 @@ impl<P: Platform> Core<P> {
     }
 
     /// Registers platform provided components, configurations, and services.
-    fn add_platform_components(&self) {
-        let mut dispatcher = self.component_dispatcher.lock();
-
-        P::ComponentInfo::components(Add::new(&mut dispatcher));
-
-        P::ComponentInfo::configs(Add::new(&mut dispatcher));
-
-        P::ComponentInfo::services(Add::new(&mut dispatcher));
+    #[inline(always)]
+    fn apply_component_info(&self) {
+        self.component_dispatcher.lock().apply_component_info::<P::ComponentInfo>();
     }
 
     /// Registers core provided components
@@ -505,7 +501,7 @@ impl<P: Platform> Core<P> {
     /// Starts the core, dispatching all drivers.
     pub fn start(&'static self, physical_hob_list: *const c_void) -> Result<()> {
         log::info!("Registering platform components");
-        self.add_platform_components();
+        self.apply_component_info();
         log::info!("Finished.");
 
         log::info!("Registering default components");
