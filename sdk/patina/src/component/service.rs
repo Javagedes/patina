@@ -219,14 +219,71 @@ impl<T: ?Sized + 'static> Service<T> {
         self.value.set(*v).expect("Service was already initialized!");
     }
 
-    /// Calls the provided closure if the service is initialized, otherwise returns the provided default value.
+    /// Returns the provided default result (if uninitalized), or applies a function to the contained value (if any).
     ///
-    /// Useful for code paths that run before component dispatch where services may not yet be initialized.
+    /// Arguments passed to map_or are eagerly evaluated; if you are passing the result of a function call, it is
+    /// recommended to use map_or_else, which is lazily evaluated.
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use patina::component::service::Service;
+    ///
+    /// trait Example {
+    ///   fn do_something(&self) -> u32;
+    /// }
+    ///
+    /// let service: Service<dyn Example> = Service::new_uninit();
+    /// assert_eq!(service.map_or(10, |s| s.do_something()), 10);
+    /// ```
     pub fn map_or<U, F>(&self, default: U, f: F) -> U
     where
         F: FnOnce(Service<T>) -> U,
     {
         if self.value.get().is_some() { f(self.clone()) } else { default }
+    }
+
+    /// Computes a default function result (if uninitialized), or applies a different function to the contained value (if any).
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use patina::component::service::Service;
+    ///
+    /// trait Example {
+    ///   fn do_something(&self) -> u32;
+    /// }
+    /// let service: Service<dyn Example> = Service::new_uninit();
+    /// assert_eq!(service.map_or_else(|| 10, |s| s.do_something()), 10);
+    /// ```
+    pub fn map_or_else<U, D, F>(self, default: D, f: F) -> U
+    where
+        D: FnOnce() -> U,
+        F: FnOnce(Service<T>) -> U,
+    {
+        if self.value.get().is_some() { f(self) } else { default() }
+    }
+
+    /// Returns the default value of U (if uninitalized), or applies a function to the contained value (if any).
+    ///
+    /// ## Example
+    ///
+    /// ```rust
+    /// use patina::component::service::Service;
+    ///
+    /// trait Example {
+    ///  fn do_something(&self) -> u32;
+    /// }
+    ///
+    /// let service: Service<dyn Example> = Service::new_uninit();
+    /// assert_eq!(service.map_or_default(), 0u32);
+    /// ```
+    pub fn map_or_default<U, F>(self, f: F) -> U
+    where
+        U: Default,
+        F: FnOnce(Service<T>) -> U,
+    {
+        if self.value.get().is_some() { f(self) } else { U::default() }
     }
 
     /// Creates an instance of Service by creating a Box\<dyn T\> and then leaking it to a static lifetime.
