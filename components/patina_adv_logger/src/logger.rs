@@ -238,7 +238,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "Service should be initialized first!"]
     fn test_uninit() {
         let serial = UartNull {};
         let logger_uninit = AdvancedLogger::<UartNull>::new(
@@ -247,7 +246,7 @@ mod tests {
             log::LevelFilter::Debug,
             serial,
         );
-        logger_uninit.timer.cpu_count();
+        assert!(logger_uninit.timer.map_or(0, |timer| timer.cpu_count()) == 0);
     }
 
     #[test]
