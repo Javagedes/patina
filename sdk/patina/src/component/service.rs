@@ -276,7 +276,7 @@ impl<T: ?Sized + 'static> Service<T> {
     /// }
     ///
     /// let service: Service<dyn Example> = Service::new_uninit();
-    /// assert_eq!(service.map_or_default(), 0u32);
+    /// assert_eq!(service.map_or_default(|s| s.do_something()), 0u32);
     /// ```
     pub fn map_or_default<U, F>(self, f: F) -> U
     where
