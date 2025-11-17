@@ -70,7 +70,7 @@ where
         let mut hw_write = true;
         if let Some(memory_log) = self.memory_log.get() {
             hw_write = memory_log.hardware_write_enabled(error_level);
-            let timestamp = self.timer.cpu_count();
+            let timestamp = self.timer.map_or(0, |timer| timer.cpu_count());
             let _ = memory_log.add_log_entry(LogEntry {
                 phase: memory_log::ADVANCED_LOGGER_PHASE_DXE,
                 level: error_level,
@@ -94,7 +94,7 @@ where
 
             // The frequency may not be initialized, if not do so now.
             if memory_log.get_frequency() == 0 {
-                let frequency = self.timer.perf_frequency();
+                let frequency = self.timer.map_or(0, |timer| timer.perf_frequency());
                 memory_log.set_frequency(frequency);
             }
 

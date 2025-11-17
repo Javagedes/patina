@@ -219,6 +219,20 @@ impl<T: ?Sized + 'static> Service<T> {
         self.value.set(*v).expect("Service was already initialized!");
     }
 
+    /// Calls the provided closure if the service is initialized, otherwise returns the provided default value.
+    /// 
+    /// Useful for code paths that run before component dispatch where services may not yet be initialized.
+    pub fn map_or<U, F>(&self, default: U, f: F) -> U
+    where 
+        F: FnOnce(Service<T>) -> U
+    {
+        if self.value.get().is_some() {
+            f(self.clone())
+        } else {
+            default
+        }
+    }
+
     /// Creates an instance of Service by creating a Box\<dyn T\> and then leaking it to a static lifetime.
     ///
     /// This function is intended for testing purposes only. Dropping the returned value will cause a memory leak as
