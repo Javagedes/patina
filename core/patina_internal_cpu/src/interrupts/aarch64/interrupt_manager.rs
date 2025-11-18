@@ -120,8 +120,8 @@ fn initialize_exception() -> Result<(), EfiError> {
         sp_el0_reg &= !0x0F;
         write_sysreg!(reg sp_el0, sp_el0_reg);
 
-        let mut hcr = read_sysreg!(hcr_el2) as u64;
-        hcr = hcr as u64 | 1 << 27; // Enable TGE
+        let mut hcr = read_sysreg!(hcr_el2);
+        hcr |= 1 << 27; // Enable TGE
         write_sysreg!(reg hcr_el2, hcr);
     }
 

@@ -85,7 +85,7 @@ pub fn disable_interrupts() {
 pub fn get_interrupt_state() -> Result<bool, EfiError> {
     #[cfg(all(not(test), target_arch = "aarch64"))]
     {
-        let daif = unsafe { read_sysreg!(daif) };
+        let daif = read_sysreg!(daif);
         Ok(daif & 0x80 == 0)
     }
     #[cfg(not(target_arch = "aarch64"))]

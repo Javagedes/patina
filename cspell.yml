@@ -47,10 +47,10 @@ words:
   - cdecl
   - cdrom
   - clangpdb
-  - corosensei
-  - coverity
   - cntfrq
   - cntpct
+  - corosensei
+  - coverity
   - cpuid
   - ctypes
   - cuviper
@@ -82,6 +82,7 @@ words:
   - getrsp
   - getsp
   - gigantor
+  - gicr
   - gnullvm
   - gohman
   - granularities
@@ -147,11 +148,11 @@ words:
   - pyserial
   - pywin
   - qword
+  - rdtsc
   - reentrancy
   - regsvr
   - relia
   - reloc
-  - rdtsc
   - rposition
   - ruint
   - rwlock
@@ -191,4 +192,3 @@ words:
   - zbuild
   - zeroize
   - zunstable
-  
