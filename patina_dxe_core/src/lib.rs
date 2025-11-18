@@ -118,8 +118,7 @@ use protocols::PROTOCOL_DB;
 use r_efi::efi;
 
 use crate::{
-    component_dispatcher::ComponentDispatcher, config_tables::memory_attributes_table, perf_timer::PerfTimer,
-    tpl_lock::TplMutex,
+    component_dispatcher::ComponentDispatcher, config_tables::memory_attributes_table, fv::FvData, perf_timer::PerfTimer, tpl_lock::TplMutex
 };
 
 #[doc(hidden)]
@@ -296,9 +295,8 @@ pub struct Core<P: Platform> {
     hob_list: TplMutex<HobList<'static>>,
     /// The subsystem responsible for data management and dispatch of Patina components.
     component_dispatcher: TplMutex<ComponentDispatcher>,
-    
-    // NOTE: This field will be moved into the `DISPATCHER_CONTEXT` when it is moved into the Core.
-    section_extractor: P::Extractor,
+    /// The subsystem for parsing and tracking firmware volumes parsed by the core.
+    fv_data: TplMutex<FvData<P::Extractor>>,
 }
 
 /// Safety: The Core struct can be safely accessed by multiple threads all internal mutability is protected by TPL
@@ -312,7 +310,7 @@ impl<P: Platform> Core<P> {
         Self {
             component_dispatcher: ComponentDispatcher::new_locked(),
             hob_list: TplMutex::new(efi::TPL_NOTIFY, HobList::new(), "HobList"),
-            section_extractor,
+            fv_data: FvData::new_locked(section_extractor),
         }
     }
 

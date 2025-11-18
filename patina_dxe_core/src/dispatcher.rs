@@ -129,7 +129,7 @@ impl Ord for OrdGuid {
 }
 
 #[derive(Default)]
-struct DispatcherContext {
+pub struct DispatcherContext {
     executing: bool,
     arch_protocols_available: bool,
     pending_drivers: Vec<PendingDriver>,

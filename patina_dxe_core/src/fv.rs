@@ -7,9 +7,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 use core::{
-    ffi::c_void,
-    mem::{self, size_of},
-    slice,
+    ffi::c_void, mem::{self, size_of}, ptr::NonNull, slice
 };
 
 use alloc::{boxed::Box, collections::BTreeMap};
@@ -28,7 +26,7 @@ use crate::{
     allocator::core_allocate_pool,
     decompress::CoreExtractor,
     protocols::{PROTOCOL_DB, core_install_protocol_interface},
-    tpl_lock,
+    tpl_lock::{self, TplMutex},
 };
 
 struct PrivateFvbData {
@@ -46,80 +44,172 @@ enum PrivateDataItem {
     FvData(PrivateFvData),
 }
 
-struct PrivateGlobalData {
+pub struct FvData<E: SectionExtractor> {
     fv_information: BTreeMap<*mut c_void, PrivateDataItem>,
-    section_extractor: CoreExtractor,
+    section_extractor: CoreExtractor<E>,
 }
 
 // Safety: access to private global data is only through mutex guard, so safe to mark sync/send.
-unsafe impl Sync for PrivateGlobalData {}
-unsafe impl Send for PrivateGlobalData {}
+// unsafe impl Sync for FvData {}
+// unsafe impl Send for FvData {}
 
-static PRIVATE_FV_DATA: tpl_lock::TplMutex<PrivateGlobalData> = tpl_lock::TplMutex::new(
-    efi::TPL_NOTIFY,
-    PrivateGlobalData { fv_information: BTreeMap::new(), section_extractor: CoreExtractor::new() },
-    "FvLock",
-);
-
-// FVB Protocol Functions
-extern "efiapi" fn fvb_get_attributes(
-    this: *mut pi::protocols::firmware_volume_block::Protocol,
-    attributes: *mut fvb::attributes::EfiFvbAttributes2,
-) -> efi::Status {
-    if attributes.is_null() {
-        return efi::Status::INVALID_PARAMETER;
+impl <E: SectionExtractor> FvData<E> {
+    /// Creates a new `FvData` instance.
+    pub const fn new(extractor: E) -> Self {
+        Self {
+            fv_information: BTreeMap::new(),
+            section_extractor: CoreExtractor::new(extractor),
+        }
     }
 
-    match core_fvb_get_attributes(this) {
-        Err(err) => return err.into(),
-        // Safety: caller must provide a valid pointer to receive the attributes. It is null-checked above.
-        Ok(fvb_attributes) => unsafe { attributes.write_unaligned(fvb_attributes) },
-    };
-
-    efi::Status::SUCCESS
-}
-
-fn core_fvb_get_attributes(
-    this: *mut pi::protocols::firmware_volume_block::Protocol,
-) -> Result<fvb::attributes::EfiFvbAttributes2, EfiError> {
-    let private_data = PRIVATE_FV_DATA.lock();
-
-    let Some(PrivateDataItem::FvbData(fvb_data)) = private_data.fv_information.get(&(this as *mut c_void)) else {
-        return Err(EfiError::NotFound);
-    };
-
-    // Safety: fvb_data.physical_address must point to a valid FV (i.e. private_data is correctly constructed and
-    // its invariants - like not removing fv once installed - are upheld).
-    let fv = unsafe { VolumeRef::new_from_address(fvb_data.physical_address)? };
-
-    Ok(fv.attributes())
-}
-
-extern "efiapi" fn fvb_set_attributes(
-    _this: *mut pi::protocols::firmware_volume_block::Protocol,
-    _attributes: *mut fvb::attributes::EfiFvbAttributes2,
-) -> efi::Status {
-    efi::Status::UNSUPPORTED
-}
-
-extern "efiapi" fn fvb_get_physical_address(
-    this: *mut pi::protocols::firmware_volume_block::Protocol,
-    address: *mut efi::PhysicalAddress,
-) -> efi::Status {
-    if address.is_null() {
-        return efi::Status::INVALID_PARAMETER;
+    /// Creates a new `FvData` instance with internal locking.
+    pub const fn new_locked(section_extractor: E) -> TplMutex<Self> {
+        TplMutex::new(
+            efi::TPL_NOTIFY,
+            Self {
+                fv_information: BTreeMap::new(),
+                section_extractor: CoreExtractor::new(section_extractor),
+            },
+            "FvLock",
+        )
     }
 
-    let private_data = PRIVATE_FV_DATA.lock();
+    /// Returns the FVB attributes for the given protocol.
+    pub(crate) fn fvb_get_attributes(
+        &self,
+        protocol: NonNull<pi::protocols::firmware_volume_block::Protocol>,
+    ) -> Result<fvb::attributes::EfiFvbAttributes2, EfiError> {
+        let Some(PrivateDataItem::FvbData(data)) = self.fv_information.get(&(protocol.cast::<c_void>().as_ptr())) else {
+            return Err(EfiError::NotFound);
+        };
 
-    let Some(PrivateDataItem::FvbData(fvb_data)) = private_data.fv_information.get(&(this as *mut c_void)) else {
-        return efi::Status::NOT_FOUND;
-    };
+        // Safety: fvb_data.physical_address must point to a valid FV (i.e. private_data is correctly constructed and
+        // its invariants - like not removing fv once installed - are upheld).
+        let fv = unsafe { VolumeRef::new_from_address(data.physical_address)? };
 
-    // Safety: caller must provide a valid pointer to receive the address. It is null-checked above.
-    unsafe { address.write_unaligned(fvb_data.physical_address) };
+        Ok(fv.attributes())
+    }
 
-    efi::Status::SUCCESS
+    /// Returns the physical address for the given protocol.
+    pub(crate) fn fvb_get_physical_address(
+        &self,
+        protocol: NonNull<pi::protocols::firmware_volume_block::Protocol>,
+    ) -> Result<u64, EfiError> {
+        let Some(PrivateDataItem::FvbData(data)) = self.fv_information.get(&(protocol.cast::<c_void>().as_ptr())) else {
+            return Err(EfiError::NotFound);
+        };
+
+        Ok(data.physical_address)
+    }
+
+    /// Returns the block size and number of remaining blocks for the given LBA.
+    pub(crate) fn fvb_get_block_size(
+        &self,
+        protocol: NonNull<pi::protocols::firmware_volume_block::Protocol>,
+        lba: efi::Lba,
+    ) -> Result<(usize, usize), EfiError> {
+        let Some(PrivateDataItem::FvbData(data)) = self.fv_information.get(&(protocol.cast::<c_void>().as_ptr())) else {
+            return Err(EfiError::NotFound);
+        };
+
+        // Safety: fvb_data.physical_address must point to a valid FV (i.e. private_data is correctly constructed and
+        // its invariants - like not removing fv once installed - are upheld).
+        let fv = unsafe { VolumeRef::new_from_address(data.physical_address)? };
+
+        let lba: u32 = lba.try_into().map_err(|_| EfiError::InvalidParameter)?;
+
+        let (block_size, remaining_blocks, _) = fv.lba_info(lba)?;
+        Ok((block_size as usize, remaining_blocks as usize))
+    }
+}
+
+#[coverage(off)]
+mod uefi {
+    use crate::{Core, Platform};
+
+    use super::*;
+
+
+    impl <P: Platform> Core<P> {
+        extern "efiapi" fn fvb_get_attributes_efiapi(
+            this: *mut pi::protocols::firmware_volume_block::Protocol,
+            attributes: *mut fvb::attributes::EfiFvbAttributes2,
+        ) -> efi::Status {
+            let Some(protocol) = NonNull::new(this) else {
+                return efi::Status::INVALID_PARAMETER;
+            };
+
+            if attributes.is_null() {
+                return efi::Status::INVALID_PARAMETER;
+            }
+
+            let core = Self::instance();
+            match core.fv_data.lock().fvb_get_attributes(protocol) {
+                Err(err) => return err.into(),
+                // Safety: caller must provide a valid pointer to receive the attributes. It is null-checked above.
+                Ok(fvb_attributes) => unsafe { attributes.write_unaligned(fvb_attributes ) }
+            }
+
+            efi::Status::SUCCESS
+        }
+
+        extern "efiapi" fn fvb_set_attributes_efiapi(
+            _this: *mut pi::protocols::firmware_volume_block::Protocol,
+            _attributes: *mut fvb::attributes::EfiFvbAttributes2,
+        ) -> efi::Status {
+            efi::Status::UNSUPPORTED
+        }
+    
+        extern "efiapi" fn fvb_get_physical_address_efiapi(
+            this: *mut pi::protocols::firmware_volume_block::Protocol,
+            address: *mut efi::PhysicalAddress,
+        ) -> efi::Status {
+            let Some(protocol) = NonNull::new(this) else {
+                return efi::Status::INVALID_PARAMETER;
+            };
+
+            if address.is_null() {
+                return efi::Status::INVALID_PARAMETER;
+            }
+
+            let core = Self::instance();
+            match core.fv_data.lock().fvb_get_physical_address(protocol) {
+                Err(err) => return err.into(),
+                // Safety: caller must provide a valid pointer to receive the address. It is null-checked above.
+                Ok(physical_address) => unsafe { address.write_unaligned(physical_address) }
+            }
+    
+            efi::Status::SUCCESS
+        }
+        
+        extern "efiapi" fn fvb_get_block_size_efiapi(
+            this: *mut pi::protocols::firmware_volume_block::Protocol,
+            lba: efi::Lba,
+            block_size: *mut usize,
+            number_of_blocks: *mut usize,
+        ) -> efi::Status {
+            let Some(protocol) = NonNull::new(this) else {
+                return efi::Status::INVALID_PARAMETER;
+            };
+
+            if block_size.is_null() || number_of_blocks.is_null() {
+                return efi::Status::INVALID_PARAMETER;
+            }
+
+            let core = Self::instance();
+            match core.fv_data.lock().fvb_get_block_size(protocol, lba) {
+                Err(err) => return err.into(),
+                // Safety: caller must provide valid pointers to receive the block size and number of blocks. They are null-checked above.
+                Ok((size, remaining_blocks)) => unsafe {
+                    block_size.write_unaligned(size);
+                    number_of_blocks.write_unaligned(remaining_blocks);
+                }
+            }
+    
+            efi::Status::SUCCESS
+        }
+    
+    }
 }
 
 extern "efiapi" fn fvb_get_block_size(
