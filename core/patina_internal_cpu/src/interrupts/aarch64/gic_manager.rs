@@ -78,7 +78,8 @@ pub struct AArch64InterruptInitializer {
 }
 
 impl AArch64InterruptInitializer {
-    /// Create AArch64InterruptInitializer from register bases and initialize GICv3 hardware for use by the current cpu.
+    /// Create AArch64InterruptInitializer from register bases and initialize GICv3/4 hardware for use by the current
+    /// cpu.
     ///
     /// * Enable affinity routing and non-secure group 1 interrupts.
     /// * Enable gic cpu interface
@@ -112,14 +113,30 @@ impl AArch64InterruptInitializer {
         let mut r_count = 0;
 
         let mpidr = read_sysreg!(MPIDR_EL1) & MPIDR_AFFINITY_MASK;
+        log::debug!("Current CPU MPIDR: {:#x}", mpidr);
+        // Support for GIC v4 is backward compatible with GIC v3, so always enable it.
         // Safety: function safety requirements guarantee exclusive access to the GICR registers.
-        for (index, redistributor) in unsafe { GicRedistributorIterator::new(gicr, false) }.enumerate() {
+        for (index, redistributor) in unsafe { GicRedistributorIterator::new(gicr, true) }.enumerate() {
             r_count = index + 1;
             if redistributor.typer().core_mpidr() == mpidr {
+                if cpu_r_idx != usize::MAX {
+                    log::error!(
+                        "Multiple redistributors found for current cpu mpidr {:#x} at index {} and {}",
+                        mpidr,
+                        cpu_r_idx,
+                        index
+                    );
+                    return Err(EfiError::DeviceError);
+                }
                 cpu_r_idx = index;
             }
+            log::debug!(
+                "Redistributor Index: {}, MPIDR: {:#x} {}",
+                index,
+                redistributor.typer().core_mpidr(),
+                if redistributor.typer().core_mpidr() == mpidr { "(Current CPU)" } else { "" }
+            );
         }
-
         log::info!("Total Redistributors: {}, Current CPU Redistributor Index: {}", r_count, cpu_r_idx);
         if cpu_r_idx == usize::MAX {
             log::error!("Failed to find redistributor for current cpu");
@@ -130,9 +147,10 @@ impl AArch64InterruptInitializer {
         // Enable affinity routing and non-secure group 1 interrupts.
         // Enable gic cpu interface
         // Enable gic distributor
+        // Enable support for GICv4; this is backward compatible with GICv3, so always enable it.
 
         // Safety: function safety requirements guarantee exclusive access to the GICR registers.
-        let mut gic_v3 = unsafe { GicV3::new(gicd, gicr, r_count, false) };
+        let mut gic_v3 = unsafe { GicV3::new(gicd, gicr, r_count, true) };
         gic_v3.setup(cpu_r_idx);
 
         // Disable all interrupts and set priority to 0x80.
