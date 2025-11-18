@@ -92,7 +92,7 @@ pub mod test_support;
 use core::{
     ffi::c_void,
     ptr::{self, NonNull},
-    str::FromStr,
+    str::FromStr, sync::atomic::AtomicPtr,
 };
 
 use alloc::boxed::Box;
@@ -232,6 +232,12 @@ impl Default for GicBases {
     }
 }
 
+/// Static reference to the DXE Core instance in the compiled binary.
+/// 
+/// This is set during the `entry_point` call of the DXE Core and is used to provide static access to the core for use
+/// only in efiapi functions where no reference to the core is otherwise available.
+static __SELF: AtomicPtr<u8> = AtomicPtr::new(ptr::null_mut());
+
 /// Platform configured DXE Core responsible for the DXE phase of UEFI booting.
 ///
 /// This struct is generic over two traits:
@@ -290,6 +296,7 @@ pub struct Core<P: Platform> {
     hob_list: TplMutex<HobList<'static>>,
     /// The subsystem responsible for data management and dispatch of Patina components.
     component_dispatcher: TplMutex<ComponentDispatcher>,
+    
     // NOTE: This field will be moved into the `DISPATCHER_CONTEXT` when it is moved into the Core.
     section_extractor: P::Extractor,
 }
@@ -308,6 +315,17 @@ impl<P: Platform> Core<P> {
             section_extractor,
         }
     }
+
+    fn set_instance(&'static self) {
+        __SELF.store(self as *const _ as *mut u8, core::sync::atomic::Ordering::SeqCst);
+
+    }
+
+    pub(crate) fn instance<'a>() -> &'a Self {
+        let ptr = __SELF.load(core::sync::atomic::Ordering::SeqCst);
+        debug_assert!(!ptr.is_null(), "DXE Core instance is not initialized.");
+        unsafe { &*(ptr as *const Self) }
+    } 
 
     /// The entry point for the Patina DXE Core.
     pub fn entry_point(&'static self, physical_hob_list: *const c_void) -> ! {
