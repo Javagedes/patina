@@ -447,8 +447,15 @@ impl TestRunner {
 #[cfg(test)]
 #[coverage(off)]
 mod tests {
+    use core::mem::MaybeUninit;
+
+    use r_efi::efi::Guid;
+
     use super::*;
-    use crate::component::{IntoComponent, Storage, params::Config};
+    use crate::{
+        boot_services::StandardBootServices,
+        component::{IntoComponent, Storage, params::Config},
+    };
 
     // A test function where we mock DxeComponentInterface to return what we want for the test.
     fn test_function(config: Config<i32>) -> Result {
@@ -512,6 +519,15 @@ mod tests {
         func: |storage| crate::test::__private_api::FunctionTest::new(test_function_fail).run(storage.into()),
     };
 
+    static TEST_CASE4: super::__private_api::TestCase = super::__private_api::TestCase {
+        name: "event_triggered_test",
+        trigger: super::__private_api::TestTrigger::Event(&Guid::from_bytes(&[0; 16])),
+        skip: false,
+        should_fail: false,
+        fail_msg: None,
+        func: |storage| crate::test::__private_api::FunctionTest::new(test_function_fail).run(storage.into()),
+    };
+
     #[test]
     #[ignore = "Skipping test until the service for UEFI services is out, so we can mock it."]
     fn test_we_can_initialize_the_component() {
@@ -555,5 +571,135 @@ mod tests {
         let test_cases: &'static [TestCase] = Box::leak(Box::new([TEST_CASE1, TEST_CASE2, TEST_CASE3]));
         let result = component.run_tests(test_cases, &mut storage);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recorder_records_results() {
+        let recorder = Recorder::default();
+
+        recorder.record_result("test1", Ok(()));
+        recorder.record_result("test1", Ok(()));
+        recorder.record_result("test1", Err("Failure 1"));
+
+        recorder.record_result("test2", Err("Failure 2"));
+        recorder.record_result("test2", Err("Failure 2"));
+
+        recorder.record_result("test3", Ok(()));
+
+        let output = format!("{}", recorder);
+        assert!(output.contains("test1 ... fail (1 fails, 2 passes): Failure 1"));
+        assert!(output.contains("test2 ... fail (2 fails, 0 passes): Failure 2"));
+        assert!(output.contains("test3 ... ok (1 passes)"));
+    }
+
+    #[test]
+    fn test_test_data_test_running() {
+        let mut storage = Storage::new();
+        storage.add_config(1_i32);
+        storage.add_service(Recorder::default());
+
+        let test_case = &TEST_CASE1;
+        let mut test_data = TestData::new(&storage, false, test_case, None);
+
+        // SAFETY: There is no other mutable access to storage at this time.
+        unsafe { test_data.run() };
+
+        let recorder = storage.get_service::<Recorder>().expect("Recorder service should be registered.");
+        let output = format!("{}", *recorder);
+        assert!(output.contains("test ... ok (1 passes)"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Callback called")]
+    fn test_test_failure_callback_handler() {
+        let test_runner = TestRunner::default().with_callback(|_, _| {
+            panic!("Callback called");
+        });
+
+        let mut storage = Storage::new();
+        storage.add_service(Recorder::default());
+        let bs: MaybeUninit<r_efi::efi::BootServices> = MaybeUninit::uninit();
+
+        // SAFETY: This is very unsafe, because it is not initialized, however this code path only calls create_event
+        // and create_event_ex, which we will fill in with no-op functions.
+        let mut bs = unsafe { bs.assume_init() };
+        extern "efiapi" fn noop_create_event(
+            _type: u32,
+            _tpl: r_efi::efi::Tpl,
+            _notify_function: Option<extern "efiapi" fn(r_efi::efi::Event, *mut core::ffi::c_void)>,
+            _notify_context: *mut core::ffi::c_void,
+            _event: *mut r_efi::efi::Event,
+        ) -> r_efi::efi::Status {
+            r_efi::efi::Status::SUCCESS
+        }
+
+        extern "efiapi" fn noop_create_event_ex(
+            _type: u32,
+            _tpl: r_efi::efi::Tpl,
+            _notify_function: Option<extern "efiapi" fn(r_efi::efi::Event, *mut core::ffi::c_void)>,
+            _notify_context: *const core::ffi::c_void,
+            _guid: *const r_efi::efi::Guid,
+            _event: *mut r_efi::efi::Event,
+        ) -> r_efi::efi::Status {
+            r_efi::efi::Status::SUCCESS
+        }
+
+        bs.create_event = noop_create_event;
+        bs.create_event_ex = noop_create_event_ex;
+
+        storage.set_boot_services(StandardBootServices::new(&bs));
+
+        // TEST_CASE3 is designed to fail.
+        let _ = test_runner.run_tests(Box::leak(Box::new([TEST_CASE3])), &mut storage);
+    }
+
+    #[test]
+    fn test_filter_should_work() {
+        let test_runner = TestRunner::default().with_filter("event_triggered_test");
+
+        let mut storage = Storage::new();
+        storage.add_service(Recorder::default());
+        let bs: MaybeUninit<r_efi::efi::BootServices> = MaybeUninit::uninit();
+
+        // SAFETY: This is very unsafe, because it is not initialized, however this code path only calls create_event
+        // and create_event_ex, which we will fill in with no-op functions.
+        let mut bs = unsafe { bs.assume_init() };
+        extern "efiapi" fn noop_create_event(
+            _type: u32,
+            _tpl: r_efi::efi::Tpl,
+            _notify_function: Option<extern "efiapi" fn(r_efi::efi::Event, *mut core::ffi::c_void)>,
+            _notify_context: *mut core::ffi::c_void,
+            _event: *mut r_efi::efi::Event,
+        ) -> r_efi::efi::Status {
+            r_efi::efi::Status::SUCCESS
+        }
+
+        extern "efiapi" fn noop_create_event_ex(
+            _type: u32,
+            _tpl: r_efi::efi::Tpl,
+            _notify_function: Option<extern "efiapi" fn(r_efi::efi::Event, *mut core::ffi::c_void)>,
+            _notify_context: *const core::ffi::c_void,
+            _guid: *const r_efi::efi::Guid,
+            _event: *mut r_efi::efi::Event,
+        ) -> r_efi::efi::Status {
+            r_efi::efi::Status::SUCCESS
+        }
+
+        bs.create_event = noop_create_event;
+        bs.create_event_ex = noop_create_event_ex;
+
+        storage.set_boot_services(StandardBootServices::new(&bs));
+
+        // TEST_CASE3 is designed to fail.
+        assert!(test_runner.run_tests(Box::leak(Box::new([TEST_CASE3, TEST_CASE4])), &mut storage).is_ok());
+
+        let recorder = storage.get_service::<Recorder>().expect("Recorder service should be registered.");
+        let output = format!("{}", *recorder);
+
+        // This test is filtered out, so it should not even show up in the results.
+        assert!(!output.contains("test_that_fails"));
+        // This test is not filtered out, but never run, so should log as such.
+        println!("{}", output);
+        assert!(output.contains("event_triggered_test ... not triggered"));
     }
 }

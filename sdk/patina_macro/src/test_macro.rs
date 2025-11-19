@@ -447,4 +447,43 @@ mod tests {
 
         assert_eq!(expanded.to_string(), expected.to_string());
     }
+
+    #[test]
+    fn test_generate_expanded_test_case() {
+        let quoated_fn = quote! {
+            fn my_test_case() -> Result {
+                assert!(true);
+            }
+        };
+
+        let item = syn::parse2::<ItemFn>(quoated_fn).unwrap();
+
+        let mut config = HashMap::new();
+        config.insert(KEY_SHOULD_FAIL, quote! {true});
+        config.insert(KEY_FAIL_MSG, quote! {Some("Expected Error")});
+        config.insert(KEY_SKIP, quote! {false});
+        config.insert(KEY_TRIGGER, quote! { patina::test::__private_api::TestTrigger::Immediate });
+
+        let expanded = generate_expanded_test_case(&item, &config);
+
+        let expected = quote! {
+            #[patina::test::linkme::distributed_slice(patina::test::__private_api::TEST_CASES)]
+            #[linkme(crate = patina::test::linkme)]
+            #[allow(non_upper_case_globals)]
+            static __my_test_case_TestCase: patina::test::__private_api::TestCase =
+            patina::test::__private_api::TestCase {
+                name: concat!(module_path!(), "::", stringify!(my_test_case)),
+                trigger: patina::test::__private_api::TestTrigger::Immediate,
+                skip: false,
+                should_fail: true,
+                fail_msg: Some("Expected Error"),
+                func: |storage| patina::test::__private_api::FunctionTest::new(my_test_case).run(storage.into()),
+            };
+            fn my_test_case() -> Result {
+                assert!(true);
+            }
+        };
+
+        assert_eq!(expanded.to_string(), expected.to_string());
+    }
 }
