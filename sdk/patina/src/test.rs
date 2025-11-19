@@ -88,10 +88,11 @@ use patina_macro::IntoService;
 use r_efi::efi::EVENT_GROUP_READY_TO_BOOT;
 
 use crate as patina;
-use crate::boot_services::tpl::Tpl;
-use crate::boot_services::{BootServices, event::EventType};
-use crate::component::{IntoComponent, Storage};
-use crate::test::__private_api::{TestCase, TestTrigger};
+use crate::{
+    boot_services::{BootServices, event::EventType, tpl::Tpl},
+    component::{IntoComponent, Storage},
+    test::__private_api::{TestCase, TestTrigger},
+};
 
 #[doc(hidden)]
 pub use linkme;
