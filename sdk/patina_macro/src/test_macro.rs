@@ -450,13 +450,13 @@ mod tests {
 
     #[test]
     fn test_generate_expanded_test_case() {
-        let quoated_fn = quote! {
+        let quoted_fn = quote! {
             fn my_test_case() -> Result {
                 assert!(true);
             }
         };
 
-        let item = syn::parse2::<ItemFn>(quoated_fn).unwrap();
+        let item = syn::parse2::<ItemFn>(quoted_fn).unwrap();
 
         let mut config = HashMap::new();
         config.insert(KEY_SHOULD_FAIL, quote! {true});
