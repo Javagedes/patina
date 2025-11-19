@@ -231,6 +231,8 @@ unsafe impl<'a, R: CRef<'a, Type = T>, T> CRef<'a> for ManuallyDrop<R> {}
 // SAFETY: Memory layout and mutability are respected for these types.
 unsafe impl<'a, R: CMutRef<'a, Type = T>, T> CMutRef<'a> for ManuallyDrop<R> {}
 
+// SAFETY: NonNull<T> is a transparent wrapper around a non-null pointer that preserves
+// the memory layout and pointer semantics of T.
 unsafe impl<T> CPtr<'_> for NonNull<T> {
     type Type = T;
 
