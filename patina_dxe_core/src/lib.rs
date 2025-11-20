@@ -297,7 +297,12 @@ pub trait PlatformInfo {
 /// }
 /// ```
 #[derive(Debug, PartialEq)]
-pub struct GicBases(pub(crate) u64, pub(crate) u64);
+pub struct GicBases {
+    /// The GIC Distributor base address.
+    pub(crate) gicd: u64,
+    /// The GIC Redistributor base address.
+    pub(crate) gicr: u64,
+}
 
 impl GicBases {
     /// Creates a new instance of the GicBases struct with the provided GIC Distributor and Redistributor base addresses.
@@ -312,7 +317,7 @@ impl GicBases {
     ///
     /// Caller must guarantee that access to these registers is exclusive to this GicBases instance.
     pub unsafe fn new(gicd_base: u64, gicr_base: u64) -> Self {
-        GicBases(gicd_base, gicr_base)
+        GicBases { gicd: gicd_base, gicr: gicr_base }
     }
 }
 
