@@ -316,6 +316,7 @@ impl GicBases {
     /// Access to these registers are exclusive to this GicBases instance.
     ///
     /// Caller must guarantee that access to these registers is exclusive to this GicBases instance.
+    #[coverage(off)]
     pub unsafe fn new(gicd_base: u64, gicr_base: u64) -> Self {
         GicBases { gicd: gicd_base, gicr: gicr_base }
     }
