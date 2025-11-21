@@ -450,7 +450,7 @@ impl<P: PlatformInfo> Core<P> {
     ///
     /// Must not be called until `set_hob_list` has been called successfully.
     fn hob_list(&self) -> &HobList<'static> {
-        self.hob_list.get().expect("HOB list has been initialized.")
+        self.hob_list.get().expect("HOB list should have been initialized already.")
     }
 
     /// Initializes the core with the given configuration, including GCD initialization, enabling allocations.
