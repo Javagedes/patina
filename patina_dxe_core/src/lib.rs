@@ -443,7 +443,7 @@ impl<P: PlatformInfo> Core<P> {
         }
 
         let _ = self.hob_list.call_once(|| hob_list);
-        true
+        self.hob_list.is_completed()
     }
 
     /// Returns a reference to the HOB list.
@@ -491,7 +491,7 @@ impl<P: PlatformInfo> Core<P> {
         // the initial free memory may not be enough to contain the HOB list. We need to relocate the HOBs because
         // the initial HOB list is not in mapped memory as passed from pre-DXE.
         hob_list.relocate_hobs();
-        debug_assert!(self.set_hob_list(hob_list));
+        assert!(self.set_hob_list(hob_list));
 
         // Add custom monitor commands to the debugger before initializing so that
         // they are available in the initial breakpoint.
