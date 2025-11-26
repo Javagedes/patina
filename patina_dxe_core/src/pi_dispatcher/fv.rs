@@ -1599,10 +1599,20 @@ mod tests {
                         file_attributes,
                         auth_valid_p,
                     );
-                    /* Raise Bug for this case , case when Buffer size is 0 and buffer not NULL. last block*/
-                    /*fv_read_file(fv_ptr1 , guid_valid_ref, (&mut buffer_valid as *mut *mut c_void),
-                    buffer_equal_0p, found_type_ref, file_attributes,
-                    auth_valid_p ); */
+                    /* Bug report: https://github.com/OpenDevicePartnership/patina/issues/1127 */
+                    /*
+                    let buffer_equal_0 = 0usize;
+                    let buffer_equal_0p: *mut usize = &buffer_equal_0 as *const usize as *mut usize;
+                    MockProtocolData::fv_read_file_efiapi(
+                        fv_ptr1,
+                        guid_valid_ref,
+                        &mut buffer_valid3 as *mut *mut c_void,
+                        buffer_equal_0p,
+                        found_type_ref,
+                        file_attributes,
+                        auth_valid_p,
+                    );
+                     */
                     /* Free Memory */
                     dealloc(buffer_valid3 as *mut u8, layout3);
                 };
