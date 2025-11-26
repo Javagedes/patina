@@ -9,6 +9,7 @@
 use core::{
     ffi::c_void,
     mem::{self, size_of},
+    num::NonZeroUsize,
     ptr::NonNull,
     slice,
 };
@@ -67,7 +68,7 @@ impl Metadata {
 /// Stored protocol data for any FV/FVB protocols installed by the DXE core.
 pub(super) struct FvProtocolData<P: PlatformInfo> {
     /// A map of installed FV/FVB protocol pointers (key) and the corresponding metadata (value).
-    fv_metadata: BTreeMap<*mut c_void, Metadata>,
+    fv_metadata: BTreeMap<NonZeroUsize, Metadata>,
     /// A marker for accessing the singleton `Core` instance in a UEFI protocol method.
     _platform_info: core::marker::PhantomData<P>,
 }
@@ -76,9 +77,7 @@ impl<P: PlatformInfo> FvProtocolData<P> {
     /// Returns the FV's physical address for the given protocol pointer, if it is in-fact a FV protocol.
     #[inline(always)]
     fn get_fv_address(&self, protocol: NonNull<pi::protocols::firmware_volume::Protocol>) -> Option<u64> {
-        if let Some(Metadata { protocol: Protocol::Fv(_), physical_address }) =
-            self.fv_metadata.get(&protocol.cast::<c_void>().as_ptr())
-        {
+        if let Some(Metadata { protocol: Protocol::Fv(_), physical_address }) = self.fv_metadata.get(&protocol.addr()) {
             Some(*physical_address)
         } else {
             None
@@ -88,8 +87,7 @@ impl<P: PlatformInfo> FvProtocolData<P> {
     /// Returns the FVB's physical address for the given protocol pointer, if it is in-fact a FVB protocol.
     #[inline(always)]
     fn get_fvb_address(&self, protocol: NonNull<pi::protocols::firmware_volume_block::Protocol>) -> Option<u64> {
-        if let Some(Metadata { protocol: Protocol::Fvb(_), physical_address }) =
-            self.fv_metadata.get(&protocol.cast::<c_void>().as_ptr())
+        if let Some(Metadata { protocol: Protocol::Fvb(_), physical_address }) = self.fv_metadata.get(&protocol.addr())
         {
             Some(*physical_address)
         } else {
@@ -97,9 +95,6 @@ impl<P: PlatformInfo> FvProtocolData<P> {
         }
     }
 }
-
-// Safety: access to private global data is only through mutex guard, so safe to mark sync/send.
-unsafe impl<P: PlatformInfo> Send for FvProtocolData<P> {}
 
 impl<P: PlatformInfo> FvProtocolData<P> {
     /// Creates a new [FvProtocolData] instance.
@@ -330,17 +325,21 @@ impl<P: PlatformInfo> FvProtocolData<P> {
         parent_handle: Option<efi::Handle>,
         base_address: u64,
     ) -> Result<efi::Handle, EfiError> {
-        let mut protocol = Self::new_fvb_protocol(parent_handle);
+        let protocol = Self::new_fvb_protocol(parent_handle);
 
-        let protocol_ptr = protocol.as_mut() as *mut pi::protocols::firmware_volume_block::Protocol as *mut c_void;
+        let protocol_ptr = NonNull::from(&*protocol).cast::<c_void>();
 
         let metadata = Metadata::new_fvb(protocol, base_address);
 
         // save the protocol structure we're about to install in the private data.
-        self.fv_metadata.insert(protocol_ptr, metadata);
+        self.fv_metadata.insert(protocol_ptr.addr(), metadata);
 
         // install the protocol and return status
-        core_install_protocol_interface(handle, pi::protocols::firmware_volume_block::PROTOCOL_GUID, protocol_ptr)
+        core_install_protocol_interface(
+            handle,
+            pi::protocols::firmware_volume_block::PROTOCOL_GUID,
+            protocol_ptr.as_ptr(),
+        )
     }
 
     /// A helper function to generate a firmware volume protocol instance and install it on the provided handle.
@@ -350,17 +349,17 @@ impl<P: PlatformInfo> FvProtocolData<P> {
         parent_handle: Option<efi::Handle>,
         base_address: u64,
     ) -> Result<efi::Handle, EfiError> {
-        let mut protocol = Self::new_fv_protocol(parent_handle);
+        let protocol = Self::new_fv_protocol(parent_handle);
 
-        let protocol_ptr = protocol.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
+        let protocol_ptr = NonNull::from(&*protocol).cast::<c_void>();
 
         let metadata = Metadata::new_fv(protocol, base_address);
 
         // save the protocol structure we're about to install in the private data.
-        self.fv_metadata.insert(protocol_ptr, metadata);
+        self.fv_metadata.insert(protocol_ptr.addr(), metadata);
 
         // install the protocol and return status
-        core_install_protocol_interface(handle, pi::protocols::firmware_volume::PROTOCOL_GUID, protocol_ptr)
+        core_install_protocol_interface(handle, pi::protocols::firmware_volume::PROTOCOL_GUID, protocol_ptr.as_ptr())
     }
 
     /// Installs both the FVB and FV protocols for a firmware volume at the specified base address.
@@ -1080,42 +1079,40 @@ mod tests {
             assert!(CORE.pi_dispatcher.fv_data.lock().fv_metadata.is_empty());
 
             /* Create Firmware Interface, this will be used by the whole test module */
-            let mut fv_interface = MockProtocolData::new_fv_protocol(parent_handle);
+            let fv_interface = MockProtocolData::new_fv_protocol(parent_handle);
 
-            let fv_ptr = fv_interface.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
+            let fv_ptr = NonNull::from(&*fv_interface).cast::<c_void>();
 
             let metadata = Metadata::new_fv(fv_interface, base_address);
             // save the protocol structure we're about to install in the private data.
-            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr, metadata);
+            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr.addr(), metadata);
 
-            let fv_ptr1: *const pi::protocols::firmware_volume::Protocol =
-                fv_ptr as *const pi::protocols::firmware_volume::Protocol;
+            let fv_ptr1 = fv_ptr.cast::<pi::protocols::firmware_volume::Protocol>().as_ptr();
 
             /* Build Firmware Volume Block Interface*/
-            let mut fvb_interface = MockProtocolData::new_fvb_protocol(parent_handle);
+            let fvb_interface = MockProtocolData::new_fvb_protocol(parent_handle);
 
-            let fvb_ptr = fvb_interface.as_mut() as *mut pi::protocols::firmware_volume_block::Protocol as *mut c_void;
-            let fvb_ptr_mut_prot = fvb_interface.as_mut() as *mut pi::protocols::firmware_volume_block::Protocol;
+            let fvb_ptr = NonNull::from(&*fvb_interface).cast::<c_void>();
+            let fvb_ptr_mut_prot = fvb_ptr.cast::<pi::protocols::firmware_volume_block::Protocol>().as_ptr();
 
             /* Build Private Data */
             let metadata = Metadata::new_fvb(fvb_interface, base_address);
             // save the protocol structure we're about to install in the private data.
-            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fvb_ptr, metadata);
+            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fvb_ptr.addr(), metadata);
 
             //let fv_attributes3: *mut fw_fs::EfiFvAttributes = &mut fv_att;
 
             /* Instance 2 - Create a FV  interface with Bad physical address to handle Error cases. */
             let mut fv_interface3 = MockProtocolData::new_fv_protocol(parent_handle);
 
-            let fv_ptr3 = fv_interface3.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
-            let fv_ptr3_const: *const pi::protocols::firmware_volume::Protocol =
-                fv_ptr3 as *const pi::protocols::firmware_volume::Protocol;
+            let fv_ptr3 = NonNull::from(&*fv_interface3).cast::<c_void>();
+            let fv_ptr3_const = fv_ptr3.cast::<pi::protocols::firmware_volume::Protocol>().as_ptr();
 
             /* Corrupt the base address to cover error conditions  */
             let base_no2: u64 = fv_interface3.as_mut() as *mut _ as u64 + 0x1000;
             let metadata2 = Metadata::new_fv(fv_interface3, base_no2);
             //save the protocol structure we're about to install in the private data.
-            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr3, metadata2);
+            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr3.addr(), metadata2);
 
             /* Create an interface with No physical address and no private data - cover Error Conditions */
             let fv_interface_no_data = MockProtocolData::new_fv_protocol(None);
@@ -1123,16 +1120,15 @@ mod tests {
             let fv_ptr_no_data = fv_interface_no_data.as_ref() as *const pi::protocols::firmware_volume::Protocol;
 
             /* Create a Firmware Volume Block Interface with Invalid Physical Address */
-            let mut fvb_intf_invalid = MockProtocolData::new_fvb_protocol(parent_handle);
-            let fvb_intf_invalid_void =
-                fvb_intf_invalid.as_mut() as *mut pi::protocols::firmware_volume_block::Protocol as *mut c_void;
+            let fvb_intf_invalid = MockProtocolData::new_fvb_protocol(parent_handle);
+            let fvb_intf_invalid_void = NonNull::from(&*fvb_intf_invalid).cast::<c_void>();
             let fvb_intf_invalid_mutpro =
-                fvb_intf_invalid.as_mut() as *mut pi::protocols::firmware_volume_block::Protocol;
+                fvb_intf_invalid_void.cast::<pi::protocols::firmware_volume_block::Protocol>().as_ptr();
             let base_no: u64 = fv.as_ptr() as u64 + 0x1000;
 
             let private_data4 = Metadata::new_fvb(fvb_intf_invalid, base_no);
             // save the protocol structure we're about to install in the private data.
-            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fvb_intf_invalid_void, private_data4);
+            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fvb_intf_invalid_void.addr(), private_data4);
 
             /* Create a Firmware Volume Block Interface without Physical address populated  */
             let mut fvb_intf_data_n = Box::from(pi::protocols::firmware_volume_block::Protocol {
@@ -1647,15 +1643,14 @@ mod tests {
             static CORE: MockCore = MockCore::new(CompositeSectionExtractor::new());
             CORE.override_instance();
 
-            let mut fv_interface = MockProtocolData::new_fv_protocol(parent_handle);
+            let fv_interface = MockProtocolData::new_fv_protocol(parent_handle);
 
-            let fv_ptr = fv_interface.as_mut() as *mut pi::protocols::firmware_volume::Protocol as *mut c_void;
+            let fv_ptr = NonNull::from(&*fv_interface);
 
             let private_data = Metadata::new_fv(fv_interface, base_address);
             // save the protocol structure we're about to install in the private data.
-            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr, private_data);
-            let fv_ptr1: *const pi::protocols::firmware_volume::Protocol =
-                fv_ptr as *const pi::protocols::firmware_volume::Protocol;
+            CORE.pi_dispatcher.fv_data.lock().fv_metadata.insert(fv_ptr.addr(), private_data);
+            let fv_ptr1: *const pi::protocols::firmware_volume::Protocol = fv_ptr.as_ptr();
 
             // Safety: the following test code must uphold the safety expectations of the unsafe
             // functions it calls. It uses direct memory management to test fv FFI primitives.
