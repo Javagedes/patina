@@ -1484,15 +1484,15 @@ mod tests {
                     );
 
                     /* Valid guid case - panicing, debug this further, for now comment*/
-                    /*fv_read_section(
+                    MockProtocolData::fv_read_section_efiapi(
                         fv_ptr1,
                         guid_valid_ref,
                         6,
                         10,
-                       &mut buffer_valid3 as *mut *mut c_void,
-                       buffer_valid_size3,
-                       auth_valid_p,
-                    );*/
+                        &mut buffer_valid3 as *mut *mut c_void,
+                        buffer_valid_size3,
+                        auth_valid_p,
+                    );
 
                     MockProtocolData::fv_read_section_efiapi(
                         fv_ptr1,
