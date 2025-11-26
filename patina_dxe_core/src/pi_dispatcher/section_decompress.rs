@@ -15,7 +15,7 @@ use patina_ffs::{
 pub(super) struct CoreExtractor<E: SectionExtractor>(E);
 
 impl<E: SectionExtractor> CoreExtractor<E> {
-    /// Creates a new [CoreExtractor] with no additional extractor.
+    /// Creates a new [CoreExtractor] with the specified additional extractor.
     pub const fn new(e: E) -> Self {
         Self(e)
     }

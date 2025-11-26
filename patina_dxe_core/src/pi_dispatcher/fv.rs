@@ -34,7 +34,7 @@ use crate::{
 
 /// A container for a FV or FVB protocol instance.
 ///
-/// The protocols instances themselves are not used directly by rust code, but this container is used to manage the
+/// The protocol instances themselves are not used directly by rust code, but this container is used to manage the
 /// lifetime of the protocols and to validate accesses to them.
 #[allow(dead_code)]
 enum Protocol {
@@ -66,7 +66,7 @@ impl Metadata {
 
 /// Stored protocol data for any FV/FVB protocols installed by the DXE core.
 pub(super) struct FvProtocolData<P: PlatformInfo> {
-    /// A map of installed FV/FVB protocol pointers and their physical addresses.
+    /// A map of installed FV/FVB protocol pointers (key) and the corresponding metadata (value).
     fv_metadata: BTreeMap<*mut c_void, Metadata>,
     /// A marker for accessing the singleton `Core` instance in a UEFI protocol method.
     _platform_info: core::marker::PhantomData<P>,
@@ -76,23 +76,25 @@ impl<P: PlatformInfo> FvProtocolData<P> {
     /// Returns the FV's physical address for the given protocol pointer, if it is in-fact a FV protocol.
     #[inline(always)]
     fn get_fv_address(&self, protocol: NonNull<pi::protocols::firmware_volume::Protocol>) -> Option<u64> {
-        let Some(Metadata { protocol: Protocol::Fv(_), physical_address }) =
+        if let Some(Metadata { protocol: Protocol::Fv(_), physical_address }) =
             self.fv_metadata.get(&protocol.cast::<c_void>().as_ptr())
-        else {
-            return None;
-        };
-        Some(*physical_address)
+        {
+            Some(*physical_address)
+        } else {
+            None
+        }
     }
 
     /// Returns the FVB's physical address for the given protocol pointer, if it is in-fact a FVB protocol.
     #[inline(always)]
     fn get_fvb_address(&self, protocol: NonNull<pi::protocols::firmware_volume_block::Protocol>) -> Option<u64> {
-        let Some(Metadata { protocol: Protocol::Fvb(_), physical_address }) =
+        if let Some(Metadata { protocol: Protocol::Fvb(_), physical_address }) =
             self.fv_metadata.get(&protocol.cast::<c_void>().as_ptr())
-        else {
-            return None;
-        };
-        Some(*physical_address)
+        {
+            Some(*physical_address)
+        } else {
+            None
+        }
     }
 }
 
@@ -975,10 +977,6 @@ mod tests {
     #[test]
     fn test_fv_init_core() {
         test_support::with_global_lock(|| {
-            /* Start with Clearing Private Global Data, Please note that this is to be done only once
-             * for test_fv_functionality.
-             * In case other functions/modules are written, clear the private global data again.
-             */
             // Safety: global lock ensures exclusive access to the private data.
             fn gen_firmware_volume2() -> hob::FirmwareVolume2 {
                 let header =
