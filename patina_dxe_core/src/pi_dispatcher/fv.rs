@@ -24,7 +24,7 @@ use patina::pi::{
 use patina::error::EfiError;
 use patina_ffs::{file::FileRef, section::SectionExtractor, volume::VolumeRef};
 use patina_internal_device_path::concat_device_path_to_boxed_slice;
-use r_efi::efi;
+use r_efi::efi::{self, MEMORY_MAPPED_IO};
 
 use crate::{
     Core, PlatformInfo,
@@ -363,12 +363,16 @@ impl<P: PlatformInfo> FvProtocolData<P> {
     }
 
     /// Installs both the FVB and FV protocols for a firmware volume at the specified base address.
+    ///
+    /// ## Safety
+    ///
+    /// Caller must ensure that base_address points to a valid firmware volume.
     pub unsafe fn install_firmware_volume(
         &mut self,
         base_address: u64,
         parent_handle: Option<efi::Handle>,
     ) -> Result<efi::Handle, EfiError> {
-        // Safety: caller must ensure that base_address is valid.
+        // Safety: Caller must meet the safety requirements of this function.
         let handle = unsafe { self.install_fv_device_path_protocol(None, base_address)? };
         self.install_fvb_protocol(Some(handle), parent_handle, base_address)?;
         self.install_fv_protocol(Some(handle), parent_handle, base_address)?;
@@ -406,12 +410,12 @@ impl<P: PlatformInfo> FvProtocolData<P> {
 
         let device_path_ptr = match fv.fv_name() {
             Some(fv_name) => {
-                //Construct FvPiWgDevicePath
+                // Construct FvPiWgDevicePath
                 let device_path = FvPiWgDevicePath::new_fv(fv_name);
                 Box::into_raw(Box::new(device_path)) as *mut c_void
             }
             None => {
-                //Construct FvMemMapDevicePath
+                // Construct FvMemMapDevicePath
                 let device_path = FvMemMapDevicePath {
                     mem_map_device_path: MemMapDevicePath {
                         header: efi::protocols::device_path::Protocol {
@@ -422,7 +426,7 @@ impl<P: PlatformInfo> FvProtocolData<P> {
                                 ((mem::size_of::<MemMapDevicePath>() >> 8) & 0xff) as u8,
                             ],
                         },
-                        memory_type: 11, //EfiMemoryMappedIo not defined in r_efi
+                        memory_type: MEMORY_MAPPED_IO,
                         starting_address: base_address,
                         ending_address: base_address + fv.size(),
                     },
