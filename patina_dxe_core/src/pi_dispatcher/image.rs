@@ -1440,9 +1440,11 @@ impl Buffer {
 #[coverage(off)]
 mod tests {
     extern crate std;
-    use super::{empty_image_info, get_buffer_by_file_path, load_image};
+    use super::{
+        PRIVATE_IMAGE_DATA, PrivateImageData, empty_image_info, exit, get_buffer_by_file_path, load_image, start_image,
+        unload_image,
+    };
     use crate::{
-        image::{PRIVATE_IMAGE_DATA, PrivateImageData, exit, start_image, unload_image},
         pecoff::UefiPeInfo,
         protocol_db,
         protocols::{PROTOCOL_DB, core_install_protocol_interface},

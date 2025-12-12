@@ -10,6 +10,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 mod fv;
+pub mod image;
 mod section_decompress;
 
 use alloc::{
@@ -40,13 +41,10 @@ use mu_rust_helpers::guid::CALLER_ID;
 use fv::device_path_bytes_for_fv_file;
 use section_decompress::CoreExtractor;
 
+use image::{core_load_image, core_start_image};
+
 use crate::{
-    PlatformInfo,
-    events::EVENT_DB,
-    image::{core_load_image, core_start_image},
-    protocol_db::DXE_CORE_HANDLE,
-    protocols::PROTOCOL_DB,
-    tpl_mutex::TplMutex,
+    PlatformInfo, events::EVENT_DB, protocol_db::DXE_CORE_HANDLE, protocols::PROTOCOL_DB, tpl_mutex::TplMutex,
 };
 
 // Default Dependency expression per PI spec v1.2 Vol 2 section 10.9.
