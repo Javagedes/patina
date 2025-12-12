@@ -461,7 +461,7 @@ unsafe impl Sync for ExitData {}
 unsafe impl Send for ExitData {}
 
 // This struct tracks global data used by the imaging subsystem.
-struct DxeCoreGlobalImageData {
+struct ImageProtocolData {
     dxe_core_image_handle: efi::Handle,
     system_table: *mut efi::SystemTable,
     private_image_data: BTreeMap<efi::Handle, PrivateImageData>,
@@ -469,9 +469,9 @@ struct DxeCoreGlobalImageData {
     image_start_contexts: Vec<*const Yielder<efi::Handle, efi::Status>>,
 }
 
-impl DxeCoreGlobalImageData {
+impl ImageProtocolData {
     const fn new() -> Self {
-        DxeCoreGlobalImageData {
+        ImageProtocolData {
             dxe_core_image_handle: core::ptr::null_mut(),
             system_table: core::ptr::null_mut(),
             private_image_data: BTreeMap::new(),
@@ -490,13 +490,13 @@ impl DxeCoreGlobalImageData {
     }
 }
 
-// DxeCoreGlobalImageData is accessed through a mutex guard, so it is safe to
+// ImageProtocolData is accessed through a mutex guard, so it is safe to
 // mark it sync/send.
-unsafe impl Sync for DxeCoreGlobalImageData {}
-unsafe impl Send for DxeCoreGlobalImageData {}
+unsafe impl Sync for ImageProtocolData {}
+unsafe impl Send for ImageProtocolData {}
 
-static PRIVATE_IMAGE_DATA: tpl_mutex::TplMutex<DxeCoreGlobalImageData> =
-    tpl_mutex::TplMutex::new(efi::TPL_NOTIFY, DxeCoreGlobalImageData::new(), "ImageLock");
+static PRIVATE_IMAGE_DATA: tpl_mutex::TplMutex<ImageProtocolData> =
+    tpl_mutex::TplMutex::new(efi::TPL_NOTIFY, ImageProtocolData::new(), "ImageLock");
 
 // helper routine that returns an empty loaded_image::Protocol struct.
 fn empty_image_info() -> efi::protocols::loaded_image::Protocol {
