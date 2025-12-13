@@ -46,7 +46,6 @@ use crate::{
     },
     runtime,
     systemtables::EfiSystemTable,
-    tpl_mutex,
 };
 
 use efi::Guid;
@@ -188,20 +187,14 @@ impl PrivateImageData {
     }
 
     /// Creates a new PrivateImageData with a image buffer created from outside this program.
-    ///
-    /// ## Safety
-    ///
-    /// Caller must ensure that `image_buffer` is a valid pointer to a slice of u8.
-    /// Caller must ensure that `image_buffer` is never deallocated.
-    unsafe fn new_from_foreign_image(
+    fn new_from_foreign_image(
         image_info: efi::protocols::loaded_image::Protocol,
-        image_buffer: *mut [u8],
+        image_buffer: &'static [u8],
         entry_point: efi::ImageEntryPoint,
         pe_info: &UefiPeInfo,
     ) -> Self {
         PrivateImageData {
-            // Safety: Caller must meet the safety requirements of this function.
-            image_buffer: Buffer::Borrowed(unsafe { &*image_buffer }),
+            image_buffer: Buffer::Borrowed(image_buffer),
             image_info: Box::new(image_info),
             hii_resource_section: None,
             entry_point,
@@ -287,6 +280,44 @@ impl PrivateImageData {
                 physical_addr + self.pe_info.entry_point_offset,
             )
         };
+
+        Ok(())
+    }
+
+    /// Calculates and sets the file name for this image, which is available via the loaded image protocol.
+    fn set_file_name(&mut self, file_path: *mut efi::protocols::device_path::Protocol) -> Result<(), EfiError> {
+        let fixed_file_path = if self.image_info.device_handle == protocol_db::INVALID_HANDLE {
+            Some(file_path)
+        } else if file_path.is_null()
+            && let Ok(device_path) = PROTOCOL_DB.get_interface_for_handle(
+                self.image_info.device_handle,
+                efi::protocols::device_path::PROTOCOL_GUID,
+            )
+        {
+            // strip the parent device path prefix from the full device path to leave only the file node
+            let (_, device_path_size) =
+                device_path_node_count(device_path as *mut efi::protocols::device_path::Protocol).unwrap_or((0, 0));
+            let split_idx = device_path_size.saturating_sub(core::mem::size_of::<efi::protocols::device_path::Protocol>());
+            let file_path = unsafe { (file_path as *const u8).add(split_idx) };
+            Some(file_path as *mut efi::protocols::device_path::Protocol)
+        } else {
+            None
+        };
+
+        if let Some(path) = fixed_file_path && !path.is_null() {
+            self.image_info.file_path = Box::into_raw(
+                copy_device_path_to_boxed_slice(path)?
+            ) as *mut efi::protocols::device_path::Protocol;
+        }
+
+        Ok(())
+    }
+
+    /// Sets the full file path for this image, which is avialable via the loaded_image_device_path protocol.
+    fn set_file_path(&mut self, file_path: *mut efi::protocols::device_path::Protocol) -> Result<(), EfiError> {
+        if !file_path.is_null() {
+            self.image_device_path = Some(copy_device_path_to_boxed_slice(file_path)?);
+        }
 
         Ok(())
     }
@@ -461,32 +492,239 @@ unsafe impl Sync for ExitData {}
 unsafe impl Send for ExitData {}
 
 // This struct tracks global data used by the imaging subsystem.
-struct ImageProtocolData {
-    dxe_core_image_handle: efi::Handle,
-    system_table: *mut efi::SystemTable,
-    private_image_data: BTreeMap<efi::Handle, PrivateImageData>,
+pub struct ImageProtocolData {
+    system_table: spin::Once<*mut efi::SystemTable>,
+    private_image_data: spin::Mutex<BTreeMap<efi::Handle, PrivateImageData>>,
     current_running_image: Option<efi::Handle>,
     image_start_contexts: Vec<*const Yielder<efi::Handle, efi::Status>>,
 }
 
 impl ImageProtocolData {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         ImageProtocolData {
-            dxe_core_image_handle: core::ptr::null_mut(),
-            system_table: core::ptr::null_mut(),
-            private_image_data: BTreeMap::new(),
+            system_table: spin::Once::new(),
+            private_image_data: spin::Mutex::new(BTreeMap::new()),
             current_running_image: None,
             image_start_contexts: Vec::new(),
         }
     }
 
-    #[cfg(test)]
-    unsafe fn reset(&mut self) {
-        self.dxe_core_image_handle = core::ptr::null_mut();
-        self.system_table = core::ptr::null_mut();
-        self.private_image_data = BTreeMap::new();
-        self.current_running_image = None;
-        self.image_start_contexts = Vec::new();
+    /// Initializes the image protocol support.
+    /// 
+    /// 1. Installs the Patina DXE Core image handle and associated protocols via the hob list
+    /// 2. Creates the event to fixup runtime image memory protections when exiting boot services.
+    /// 3. Sets the image services with the system table.
+    pub(super) fn init(&self, hob_list: &HobList, system_table: &mut EfiSystemTable) {
+        let _ = self.system_table.call_once(|| system_table.as_ptr() as *mut efi::SystemTable);
+
+        self.install_dxe_core_image(hob_list, system_table);
+
+        let _ = EVENT_DB.create_event(
+            efi::EVT_NOTIFY_SIGNAL,
+            efi::TPL_CALLBACK,
+            Some(runtime_image_protection_fixup_ebs),
+            None,
+            Some(efi::EVENT_GROUP_EXIT_BOOT_SERVICES),
+        );
+
+        system_table.boot_services_mut().load_image = load_image;
+        system_table.boot_services_mut().start_image = start_image;
+        system_table.boot_services_mut().unload_image = unload_image;
+        system_table.boot_services_mut().exit = exit;
+    }
+
+    /// Finds the DXE Core memory allocation module HOB and uses it to produces the loaded image protocol.
+    fn install_dxe_core_image(&self, hob_list: &HobList, system_table: &mut EfiSystemTable) {
+        let dxe_core_hob = hob_list
+            .iter()
+            .find_map(|hob| {
+                if let Hob::MemoryAllocationModule(module) = hob && module.module_name == guids::DXE_CORE {
+                    Some(module)
+                } else {
+                    None
+                }
+            }).expect("Did not find MemoryAllocationModule Hob for DxeCore. Use patina::guid::DXE_CORE as FFS GUID.");
+
+        let mut image_info = empty_image_info();
+        image_info.system_table = *self.system_table.get().expect("System table is initialized.");
+        image_info.image_base = dxe_core_hob.alloc_descriptor.memory_base_address as *mut c_void;
+        image_info.image_size = dxe_core_hob.alloc_descriptor.memory_length;
+
+        // The entry point in the HOB is a u64 address. transmute it to the correct function pointer type.
+        // SAFETY: The module entry_point is spec defined as the below function signature.
+        let entry_point = unsafe {
+            transmute::<u64, extern "efiapi" fn(*mut c_void, *mut r_efi::system::SystemTable) -> r_efi::base::Status>(
+                dxe_core_hob.entry_point,
+            )
+        };
+
+        // SAFETY: The DXE Core HOB information is valid and points to a valid PE image. This ensures that the start
+        // address and length are accurate.
+        let dxe_core_image_buffer = unsafe {
+            from_raw_parts(
+                dxe_core_hob.alloc_descriptor.memory_base_address as *const u8,
+                dxe_core_hob.alloc_descriptor.memory_length as usize,
+            )
+        };
+        
+        let pe_info = UefiPeInfo::parse(dxe_core_image_buffer).expect("Failed to parse PE info for DXE Core");
+
+        let private_image_data = PrivateImageData::new_from_foreign_image(
+            image_info,
+            dxe_core_image_buffer,
+            entry_point,
+            &pe_info,
+        );
+
+        let handle = core_install_protocol_interface(
+            Some(protocol_db::DXE_CORE_HANDLE),
+            efi::protocols::loaded_image::PROTOCOL_GUID,
+            private_image_data.image_info.as_ref() as *const efi::protocols::loaded_image::Protocol as *mut c_void,
+        ).unwrap_or_else(|err| panic!("Failed to install dxe core image handle: {err:?}"));
+
+        assert_eq!(handle, protocol_db::DXE_CORE_HANDLE);
+
+        initialize_debug_image_info_table(system_table);
+        core_new_debug_image_info_entry(
+            EfiDebugImageInfoNormal::EFI_DEBUG_IMAGE_INFO_TYPE_NORMAL,
+            private_image_data.image_info.as_ref() as *const efi::protocols::loaded_image::Protocol,
+            handle,
+        );
+
+        self.private_image_data.lock().insert(handle, private_image_data);
+    }
+
+    /// loads an image and prepares it for execution.
+    /// 
+    /// Either loads the provided buffer or locates the image via the device path.
+    fn load_image(
+        &self,
+        boot_policy: bool,
+        parent_handle: efi::Handle,
+        file_path: *mut efi::protocols::device_path::Protocol,
+        image: Option<&[u8]>,
+    ) -> Result<efi::Handle, EfiError> {
+        perf_load_image_begin(core::ptr::null_mut(), create_performance_measurement);
+
+        if image.is_none() && file_path.is_null() {
+            log::error!("load_image failed: both image buffer and file path are null.");
+            return Err(EfiError::InvalidParameter);
+        }
+
+        Self::validate_parent(parent_handle)?;
+
+        let (image_to_load, from_fv, device_handle, auth_status) = match image {
+            Some(buffer) => Self::locate_image_metadata_by_buffer(buffer, file_path),
+            None => Self::locate_image_metadata_by_file_path(boot_policy, file_path)?,
+        };
+
+        // authenticate the image
+        let security_status = authenticate_image(file_path, &image_to_load, boot_policy, from_fv, auth_status);
+        
+        let mut image_info = empty_image_info();
+        image_info.system_table = *self.system_table.get().expect("System table is initialized.");
+        image_info.parent_handle = parent_handle;
+        image_info.device_handle = device_handle;
+        
+        let mut private_info = core_load_pe_image(&image_to_load.as_ref(), image_info)?;
+        
+        private_info.set_file_name(file_path)?;
+        private_info.set_file_path(file_path)?;
+
+        let handle = private_info.install().map_err(|_| EfiError::LoadError)?;
+
+        log::info!(
+            "Loaded image at {:#x?} Size={:#x?} EntryPoint={:#x?} {:}",
+            private_info.image_info.image_base,
+            private_info.image_info.image_size,
+            private_info.entry_point as usize,
+            private_info.pe_info.filename_or("<no PDB>"),
+        );
+
+        // register the loaded image with the debug image info configuration table. This is done before the debugger is
+        // notified so that the debugger can access the loaded image protocol before that point, e.g. so
+        // that symbols can be loaded on module breakpoints.
+        core_new_debug_image_info_entry(
+            EfiDebugImageInfoNormal::EFI_DEBUG_IMAGE_INFO_TYPE_NORMAL,
+            private_info.image_info.as_ref() as *const efi::protocols::loaded_image::Protocol,
+            handle,
+        );
+
+        // Notify the debugger of the image load.
+        patina_debugger::notify_module_load(
+            private_info.pe_info.filename_or(""),
+            private_info.image_info.image_base as usize,
+            private_info.image_info.image_size as usize,
+        );
+
+        self.private_image_data.lock().insert(handle, private_info);
+
+        perf_load_image_end(core::ptr::null_mut(), create_performance_measurement);
+
+        Ok((handle, security_status))
+    }
+
+    /// Validates that the provided parent handle is valid and has a loaded image protocol.
+    fn validate_parent(parent: efi::Handle) -> Result<(), EfiError> {
+        PROTOCOL_DB
+            .validate_handle(parent)
+            .inspect_err(|err| log::error!("Invalid parent handle {err:?}"))?;
+
+        PROTOCOL_DB
+            .get_interface_for_handle(parent, efi::protocols::loaded_image::PROTOCOL_GUID)
+            .map_err(|err| {
+                log::error!("Failed to get loaded image interface on the parent handle: {err:?}");
+                EfiError::InvalidParameter
+            })?;
+        Ok(())
+    }
+
+    fn locate_image_metadata_by_buffer(
+        image: &[u8],
+        file_path: *mut efi::protocols::device_path::Protocol,
+    ) -> (Vec<u8>, bool, *mut c_void, u32) {
+        if let Ok((_, device_handle)) = core_locate_device_path(efi::protocols::device_path::PROTOCOL_GUID, file_path) {
+            (image.to_vec(), false, device_handle, 0)
+        } else {
+           (image.to_vec(), false, protocol_db::INVALID_HANDLE, 0)
+        }
+    }
+
+    /// Returns the image metadata by it's file path using simple file system or load file protocols.
+    /// 
+    /// Note: presently none of the supported methods return `from_fv` or `authentication_status`.
+    /// 
+    /// Returns a tuple of (image buffer, from_fv, device handle, authentication status).
+    fn locate_image_metadata_by_file_path(
+        boot_policy: bool,
+        file_path: *mut efi::protocols::device_path::Protocol,
+    ) -> Result<(Vec<u8>, bool, *mut c_void, u32), EfiError> {
+        if file_path.is_null() {
+            Err(EfiError::InvalidParameter)?;
+        }
+
+        if let Ok((buffer, device_handle)) = get_file_buffer_from_fw(file_path) {
+            return Ok((buffer, true, device_handle, 0));
+        }
+
+        if let Ok((buffer, device_handle)) = get_file_buffer_from_sfs(file_path) {
+            return Ok((buffer, false, device_handle, 0));
+        }
+
+        if !boot_policy
+            && let Ok((buffer, device_handle)) =
+                get_file_buffer_from_load_protocol(efi::protocols::load_file2::PROTOCOL_GUID, false, file_path)
+        {
+            return Ok((buffer, false, device_handle, 0));
+        }
+
+        if let Ok((buffer, device_handle)) =
+            get_file_buffer_from_load_protocol(efi::protocols::load_file::PROTOCOL_GUID, boot_policy, file_path)
+        {
+            return Ok((buffer, false, device_handle, 0));
+        }
+
+        Err(EfiError::NotFound)
     }
 }
 
@@ -494,9 +732,6 @@ impl ImageProtocolData {
 // mark it sync/send.
 unsafe impl Sync for ImageProtocolData {}
 unsafe impl Send for ImageProtocolData {}
-
-static PRIVATE_IMAGE_DATA: tpl_mutex::TplMutex<ImageProtocolData> =
-    tpl_mutex::TplMutex::new(efi::TPL_NOTIFY, ImageProtocolData::new(), "ImageLock");
 
 // helper routine that returns an empty loaded_image::Protocol struct.
 fn empty_image_info() -> efi::protocols::loaded_image::Protocol {
@@ -515,85 +750,6 @@ fn empty_image_info() -> efi::protocols::loaded_image::Protocol {
         image_data_type: efi::BOOT_SERVICES_DATA,
         unload: None,
     }
-}
-
-// retrieves the dxe core image info from the hob list, and installs the
-// loaded_image protocol on it to create the dxe_core image handle.
-fn install_dxe_core_image(hob_list: &HobList, system_table: &mut EfiSystemTable) {
-    // Retrieve the MemoryAllocationModule hob corresponding to the DXE core
-    // (i.e. this driver).
-    let dxe_core_hob = hob_list
-        .iter()
-        .find_map(|x| match x {
-            Hob::MemoryAllocationModule(module) if module.module_name == guids::DXE_CORE => Some(module),
-            _ => None,
-        })
-        .expect("Did not find MemoryAllocationModule Hob for DxeCore. Use patina::guid::DXE_CORE as FFS GUID.");
-
-    // get exclusive access to the global private data.
-    let mut private_data = PRIVATE_IMAGE_DATA.lock();
-
-    // convert the entry point from the hob into the appropriate function
-    // pointer type and save it in the private_image_data structure for the core.
-    // Safety: dxe_core_hob.entry_point must be the correct and actual entry
-    // point for the core.
-    let entry_point = unsafe {
-        transmute::<u64, extern "efiapi" fn(*mut c_void, *mut r_efi::system::SystemTable) -> r_efi::base::Status>(
-            dxe_core_hob.entry_point,
-        )
-    };
-
-    // create the loaded_image structure for the core and populate it with data
-    // from the hob.
-    let mut image_info = empty_image_info();
-    image_info.system_table = private_data.system_table;
-    image_info.image_base = dxe_core_hob.alloc_descriptor.memory_base_address as *mut c_void;
-    image_info.image_size = dxe_core_hob.alloc_descriptor.memory_length;
-
-    let pe_info = unsafe {
-        UefiPeInfo::parse(core::slice::from_raw_parts(
-            dxe_core_hob.alloc_descriptor.memory_base_address as *const u8,
-            dxe_core_hob.alloc_descriptor.memory_length as usize,
-        ))
-        .expect("Failed to parse PE info for DXE Core")
-    };
-
-    // we do not use PrivateImageData::new() here because it
-    // expects we are about to load this image and so allocates
-    // an image buffer for us. We already have the image buffer
-    // here as DXE Core is uniquely already loaded
-    let image_buffer =
-        core::ptr::slice_from_raw_parts_mut(image_info.image_base as *mut u8, image_info.image_size as usize);
-
-    // SAFETY: The DXE Core image comes from a HOB outside this program and will not be deallocated.
-    // SAFETY: This image buffer is a valid slice of u8 of the correct size as indicated by the HOB.
-    let private_image_data =
-        unsafe { PrivateImageData::new_from_foreign_image(image_info, image_buffer, entry_point, &pe_info) };
-
-    // install the loaded_image protocol on a new handle.
-    let handle = match core_install_protocol_interface(
-        Some(protocol_db::DXE_CORE_HANDLE),
-        efi::protocols::loaded_image::PROTOCOL_GUID,
-        private_image_data.image_info.as_ref() as *const efi::protocols::loaded_image::Protocol as *mut c_void,
-    ) {
-        Err(err) => panic!("Failed to install dxe core image handle: {err:?}"),
-        Ok(handle) => handle,
-    };
-    assert_eq!(handle, protocol_db::DXE_CORE_HANDLE);
-
-    // register the core image with the debug image info configuration table
-    initialize_debug_image_info_table(system_table);
-    core_new_debug_image_info_entry(
-        EfiDebugImageInfoNormal::EFI_DEBUG_IMAGE_INFO_TYPE_NORMAL,
-        private_image_data.image_info.as_ref() as *const efi::protocols::loaded_image::Protocol,
-        handle,
-    );
-
-    // record this handle as the new dxe_core handle.
-    private_data.dxe_core_image_handle = handle;
-
-    // store the dxe core image private data in the private image data map.
-    private_data.private_image_data.insert(handle, private_image_data);
 }
 
 // loads and relocates the image in the specified slice and returns the
