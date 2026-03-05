@@ -404,9 +404,7 @@ impl TestRecord {
     }
 }
 
-/// Specifies whether a filter should include or exclude test cases whose name contains the pattern.
-///
-/// Used with [`TestRunner::with_filter`] to control which tests are executed.
+/// A filter to include or exclude test cases whose name contains the pattern.
 ///
 /// # Example
 ///

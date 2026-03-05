@@ -186,6 +186,20 @@ mod tests {
     }
 
     #[test]
+    fn test_should_run_with_no_filters() {
+        let test_case = TestCase {
+            name: "test",
+            triggers: &[TestTrigger::Manual],
+            skip: false,
+            should_fail: false,
+            fail_msg: None,
+            func: |_| Ok(true),
+        };
+
+        std::assert!(test_case.should_run(&[]));
+    }
+
+    #[test]
     fn test_should_run_with_exclude_filters() {
         let test_case = TestCase {
             name: "my_crate::tests::test_case",
