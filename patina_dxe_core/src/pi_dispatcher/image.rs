@@ -170,6 +170,7 @@ struct PrivateImageData {
     image_buffer: Buffer,
     image_info: Box<efi::protocols::loaded_image::Protocol>,
     hii_resource_section: Option<Box<[u8], PageFree>>,
+    sbom_section: Option<Box<[u8]>>,
     entry_point: efi::ImageEntryPoint,
     started: bool,
     exit_data: Option<ExitData>,
@@ -206,6 +207,7 @@ impl PrivateImageData {
             image_buffer: Buffer::Owned(bytes),
             image_info: Box::new(image_info),
             hii_resource_section: None,
+            sbom_section: None,
             entry_point: unimplemented_entry_point,
             started: false,
             exit_data: None,
@@ -228,6 +230,7 @@ impl PrivateImageData {
             image_buffer: Buffer::Borrowed(image_buffer),
             image_info: Box::new(image_info),
             hii_resource_section: None,
+            sbom_section: None,
             entry_point,
             started: true,
             exit_data: None,
@@ -235,6 +238,22 @@ impl PrivateImageData {
             pe_info: pe_info.clone(),
             relocation_data: Vec::new(),
         }
+    }
+
+    /// Locates and copes the SBOM section from the image into a dedicated buffer.
+    fn load_sbom_section(&mut self, _image: &[u8]) -> Result<(), EfiError> {
+        let loaded_image = self.image_buffer.as_ref();
+
+        let result = pecoff::get_section(".sbom", &self.pe_info, loaded_image).map_err(|err| {
+            let pe_file_name = self.pe_info.filename_or("Unknown");
+            log::error!("core_load_pe_image failed: {pe_file_name} get_section .sbom returned status: {err:?}");
+            EfiError::LoadError
+        })?;
+
+        if let Some(bytes) = result {
+            self.sbom_section = Some(bytes.to_vec().into_boxed_slice());
+        }
+        Ok(())
     }
 
     /// Locates and copies the HII resource section from the image into a dedicated buffer.
@@ -1259,6 +1278,8 @@ fn core_load_pe_image(
     private_info.relocate_image()?;
 
     private_info.load_resource_section(image)?;
+
+    private_info.load_sbom_section(image)?;
 
     // If we are not NX compatible and a EFI Application, we need to attempt to activate compatibility mode.
     // Compatability mode may or may not actually activate depending on how we are configured.
@@ -2648,6 +2669,7 @@ mod tests {
                 image_buffer: bytes,
                 image_info: Box::new(image_info),
                 hii_resource_section: None,
+                sbom_section: None,
                 entry_point: dummy_entry,
                 started: false,
                 exit_data: None,
