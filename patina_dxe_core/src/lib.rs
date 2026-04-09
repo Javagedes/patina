@@ -91,6 +91,7 @@ mod pi_dispatcher;
 mod protocol_db;
 mod protocols;
 mod runtime;
+mod sbom;
 mod systemtables;
 mod tpl_mutex;
 
