@@ -32,6 +32,7 @@ memoffset = {version = "0.9.1" }
 mu_rust_helpers = { version = "3.0.2" }
 num-traits = { version = "0.2", default-features = false }
 patina = { version = "21.0.1", path = "sdk/patina" }
+patina_acpi = { version = "21.0.1", path = "components/patina_acpi" }
 patina_debugger = { version = "21.0.1", path = "core/patina_debugger" }
 patina_ffs = { version = "21.0.1", path = "sdk/patina_ffs" }
 patina_ffs_extractors = { version = "21.0.1", path = "sdk/patina_ffs_extractors" }
