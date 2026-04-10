@@ -89,8 +89,8 @@ impl AcpiTableManager {
     /// use `get_acpi_table_unchecked` for a untyped retrieval.
     ///
     /// The RSDP and XSDT cannot be accessed through `get_acpi_table`.
-    pub fn get_acpi_table<T: AcpiTable + 'static>(&self, table_key: TableKey) -> Result<&T, AcpiError> {
-        let acpi_table = self.provider_service.get_acpi_table(table_key)?;
+    pub fn get_acpi_table<T: AcpiTable + 'static>(&self, table_key: &TableKey) -> Result<&T, AcpiError> {
+        let acpi_table = self.provider_service.get_acpi_table(&table_key).ok_or(AcpiError::InvalidTableKey)?;
 
         // There may be ACPI tables whose type is unknown at installation, due to installation from the HOB or a C protocol.
         // In these cases, the type is is unspecified (AcpiTableHeader instead of a specific table type), so we skip type checking.
@@ -145,7 +145,7 @@ impl AcpiTableManager {
     /// This can be used in place of `get_acpi_table`, or in conjunction with it to retrieve a specific table reference.
     ///
     /// The RSDP and XSDT are not included in the list of iterable ACPI tables.
-    pub fn iter_tables(&self) -> Vec<Table> {
+    pub fn iter_tables(&self) -> Vec<&Table> {
         self.provider_service.collect_tables()
     }
 }
@@ -161,13 +161,13 @@ pub(crate) trait AcpiProvider {
     fn uninstall_acpi_table(&self, table_key: TableKey) -> Result<(), AcpiError>;
 
     /// Retrieves an ACPI table by its table key. This must be the same key returned at the time of installation.
-    fn get_acpi_table(&self, table_key: TableKey) -> Result<&Table, AcpiError>;
+    fn get_acpi_table(&self, table_key: &TableKey) -> Option<&Table>;
 
     /// Registers or unregisters a function which will be called whenever a new ACPI table is installed.
     fn register_notify(&self, should_register: bool, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError>;
 
     /// Returns all currently installed tables in an iterable format.
-    fn collect_tables(&self) -> Vec<Table>;
+    fn collect_tables(&self) -> Vec<&Table>;
 }
 
 // #[cfg(test)]

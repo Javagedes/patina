@@ -83,18 +83,13 @@ impl AcpiComponent {
         boot_services.install_protocol_interface(None, Box::new(AcpiGetProtocol::new()))?;
 
         // Initialize the ACPI table info singleton (used for the protocol).
-        STANDARD_ACPI_PROVIDER
-            .initialize(boot_services, memory_manager.clone())
-            .map_err(|_e| EfiError::AlreadyStarted)?;
+        STANDARD_ACPI_PROVIDER.initialize(boot_services, memory_manager.clone());
 
         // Create and set the XSDT with an initial number of entries.
         let xsdt_size = ACPI_HEADER_LEN + MAX_INITIAL_ENTRIES * mem::size_of::<u64>();
 
         // The XSDT is always allocated in reclaim memory.
-        let allocator = STANDARD_ACPI_PROVIDER
-            .memory_manager
-            .get()
-            .ok_or(EfiError::NotStarted)?
+        let allocator = memory_manager
             .get_allocator(EfiMemoryType::ACPIReclaimMemory)
             .map_err(|_e| EfiError::OutOfResources)?;
 
@@ -148,10 +143,7 @@ impl AcpiComponent {
 
         // Allocate memory for the RSDP using allocate_pages
         let rsdp_size = mem::size_of::<AcpiRsdp>();
-        let rsdp_allocation = STANDARD_ACPI_PROVIDER
-            .memory_manager
-            .get()
-            .ok_or(EfiError::NotStarted)?
+        let rsdp_allocation = memory_manager
             .allocate_pages(
                 uefi_size_to_pages!(rsdp_size),
                 patina::component::service::memory::AllocationOptions::new()
@@ -175,10 +167,10 @@ impl AcpiComponent {
         STANDARD_ACPI_PROVIDER.set_rsdp(rsdp_allocated);
 
         // Checksum the root tables after setting up.
-        STANDARD_ACPI_PROVIDER.checksum_common_tables();
+        STANDARD_ACPI_PROVIDER.critical_section(|inner| inner.checksum_common_tables());
 
         if let Some(acpi_guid_hob) = acpi_hob {
-            let _ = STANDARD_ACPI_PROVIDER.install_tables_from_hob(acpi_guid_hob);
+            let _ = STANDARD_ACPI_PROVIDER.critical_section(|inner| inner.install_tables_from_hob(acpi_guid_hob));
         }
 
         storage.add_service(&STANDARD_ACPI_PROVIDER);
