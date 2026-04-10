@@ -9,7 +9,7 @@
 //!
 
 use crate::{
-    acpi_table::{AcpiTable, AcpiTableHeader},
+    acpi_table::{Table, AcpiTableHeader},
     signature::{self, ACPI_VERSIONS_GTE_2},
 };
 
@@ -96,7 +96,7 @@ impl AcpiTableProtocol {
         if let Some(global_mm) = STANDARD_ACPI_PROVIDER.memory_manager.get() {
             // SAFETY: `acpi_table_buffer` has been validated as non-null and of sufficient size above.
             let acpi_table =
-                unsafe { AcpiTable::new_from_ptr(acpi_table_buffer as *const AcpiTableHeader, None, global_mm) };
+                unsafe { Table::new_from_ptr(acpi_table_buffer as *const AcpiTableHeader, None, global_mm) };
 
             if let Ok(table) = acpi_table {
                 let signature = table.signature();

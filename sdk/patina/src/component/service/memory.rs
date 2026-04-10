@@ -651,6 +651,7 @@ impl core::fmt::Display for PageAllocation {
 /// the memory to be freed when a smart pointer is dropped. This cannot be used to
 /// allocate memory, and should only be used to free the specific memory it tracks.
 #[cfg(any(test, feature = "alloc"))]
+#[derive(Clone)]
 pub struct PageFree {
     blob: NonNull<u8>,
     page_count: usize,
