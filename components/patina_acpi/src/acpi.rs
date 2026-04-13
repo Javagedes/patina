@@ -46,7 +46,7 @@ pub static STANDARD_ACPI_PROVIDER: StandardAcpiProvider<StandardBootServices> = 
 #[service(dyn AcpiProvider)]
 pub(crate) struct StandardAcpiProvider<B: BootServices + 'static> {
     critical_section: TplMutex<(), B>,
-    inner: UnsafeCell<AcpiProviderInner<B>>,
+    inner: UnsafeCell<AcpiProviderInner<B, &'static dyn alloc::alloc::Allocator>>,
 }
 
 // SAFETY: `StandardAcpiProvider` does not share any internal references or non-Send types across threads.
@@ -71,7 +71,7 @@ where
 
     pub fn critical_section<'a, F, R>(&'a self, f: F) -> R
     where
-        F: FnOnce(&'a mut AcpiProviderInner<B>) -> R,
+        F: FnOnce(&'a mut AcpiProviderInner<B, &'static dyn alloc::alloc::Allocator>) -> R,
     {
         let _guard = self.critical_section.lock();
         // SAFETY: Access to `inner` is synchronized by `critical_section`.
@@ -102,7 +102,7 @@ where
         self.critical_section(|inner| inner.xsdt_metadata = Some(xsdt_data));
     }
 
-    pub fn get_table_at_idx(&self, idx: usize) -> Result<(TableKey, &Table), AcpiError> {
+    pub fn get_table_at_idx(&self, idx: usize) -> Result<(TableKey, &Table<&'static dyn alloc::alloc::Allocator>), AcpiError> {
         self.critical_section(|inner| inner.get_table_at_idx(idx))
     }
 
@@ -116,7 +116,7 @@ impl<B> AcpiProvider for StandardAcpiProvider<B>
 where
     B: BootServices,
 {
-    fn install_acpi_table(&self, table: Table) -> Result<TableKey, AcpiError> {
+    fn install_acpi_table(&self, table: Table<&'static dyn alloc::alloc::Allocator>) -> Result<TableKey, AcpiError> {
         self.critical_section(|inner| inner.install_acpi_table(table))
     }
 
@@ -124,7 +124,7 @@ where
         self.critical_section(|inner| inner.uninstall_acpi_table(table_key))
     }
 
-    fn get_acpi_table(&self, table_key: &TableKey) -> Option<&Table> {
+    fn get_acpi_table(&self, table_key: &TableKey) -> Option<&Table<&'static dyn alloc::alloc::Allocator>> {
         self.critical_section(|inner| inner.get_acpi_table(table_key))
     }
 
@@ -134,13 +134,13 @@ where
 
     /// Iterate over installed tables in the ACPI table list.
     /// The RSDP, FACS, and DSDT are not considered part of the list of installed tables and should not be iterated over.
-    fn collect_tables(&self) -> Vec<&Table> {
+    fn collect_tables(&self) -> Vec<&Table<&'static dyn alloc::alloc::Allocator>> {
         self.critical_section(|inner| inner.collect_tables())
     }
 }
 
-pub struct AcpiProviderInner<B: BootServices> {
-    acpi_tables: BTreeMap<TableKey, Table>,
+pub struct AcpiProviderInner<B: BootServices, A: alloc::alloc::Allocator = &'static dyn alloc::alloc::Allocator> {
+    acpi_tables: BTreeMap<TableKey, Table<A>>,
     next_table_key: usize,
     notify_list: Vec<AcpiNotifyFn>,
     boot_services: Option<B>,
@@ -149,7 +149,7 @@ pub struct AcpiProviderInner<B: BootServices> {
     rsdp: Option<&'static mut AcpiRsdp>,
 }
 
-impl <B: BootServices> AcpiProviderInner<B> {
+impl <B: BootServices, A: alloc::alloc::Allocator> AcpiProviderInner<B, A> {
     /// Known table keys for system tables.
     const FACS_KEY: TableKey = TableKey(1);
     const DSDT_KEY: TableKey = TableKey(2);
@@ -175,7 +175,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
         self.memory_manager.replace(&memory_manager);
     }
 
-    fn install_acpi_table(&mut self, table: Table) -> Result<TableKey, AcpiError> {
+    fn install_acpi_table(&mut self, table: Table<A>) -> Result<TableKey, AcpiError> {
         // Based on the ACPI spec, implementations can choose to disallow duplicates or incorporate them into existing installed tables.
         // For simplicity, this implementation rejects attempts to install a new XSDT when one already exists.
         if table.signature() == signature::XSDT {
@@ -202,7 +202,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
         Ok(())
     }
 
-    fn get_acpi_table(&self, table_key: &TableKey) -> Option<&Table> {
+    fn get_acpi_table(&self, table_key: &TableKey) -> Option<&Table<A>> {
         self.acpi_tables.get(table_key)
     }
 
@@ -221,12 +221,12 @@ impl <B: BootServices> AcpiProviderInner<B> {
         Ok(())
     }
 
-    fn collect_tables(&self) -> Vec<&Table> {
+    fn collect_tables(&self) -> Vec<&Table<A>> {
         self.acpi_tables.values().collect()
     }
 
     /// Installs the FACS.
-    pub(crate) fn install_facs(&mut self, facs_info: Table) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_facs(&mut self, facs_info: Table<A>) -> Result<TableKey, AcpiError> {
         // Update the FADT's address pointer to the FACS.
         if let Some(fadt_table) = self.acpi_tables.get_mut(&Self::FADT_KEY) {
             let facs_addr = facs_info.as_ref::<AcpiFacs>() as *const AcpiFacs as u64;
@@ -291,16 +291,16 @@ impl <B: BootServices> AcpiProviderInner<B> {
                 return Err(AcpiError::InvalidSignature);
             }
 
-            // SAFETY: The tables in the HOB should be valid ACPI tables.
-            let facs_table = unsafe {
-                Table::new_from_ptr(
-                    fadt.x_firmware_ctrl() as *const AcpiTableHeader,
-                    Some(TypeId::of::<AcpiFacs>()),
-                    &self.memory_manager,
-                )?
-            };
-            // SAFETY: The tables in the HOB should be valid ACPI tables.
-            self.install_facs(facs_table)?;
+            // // SAFETY: The tables in the HOB should be valid ACPI tables.
+            // let facs_table = unsafe {
+            //     Table::new_from_ptr(
+            //         fadt.x_firmware_ctrl() as *const AcpiTableHeader,
+            //         Some(TypeId::of::<AcpiFacs>()),
+            //         &self.memory_manager,
+            //     )?
+            // };
+            // // SAFETY: The tables in the HOB should be valid ACPI tables.
+            // self.install_facs(facs_table)?;
         }
 
         if fadt.x_dsdt() != 0 {
@@ -311,14 +311,14 @@ impl <B: BootServices> AcpiProviderInner<B> {
             }
 
             // SAFETY: The tables in the HOB should be valid ACPI tables.
-            let dsdt_table = unsafe {
-                Table::new_from_ptr(
-                    fadt.x_dsdt() as *const AcpiTableHeader,
-                    Some(TypeId::of::<AcpiDsdt>()),
-                    &self.memory_manager,
-                )?
-            };
-            self.install_dsdt(dsdt_table)?;
+            // let dsdt_table = unsafe {
+            //     Table::new_from_ptr(
+            //         fadt.x_dsdt() as *const AcpiTableHeader,
+            //         Some(TypeId::of::<AcpiDsdt>()),
+            //         &self.memory_manager,
+            //     )?
+            // };
+            // self.install_dsdt(dsdt_table)?;
         }
 
         Ok(())
@@ -362,15 +362,15 @@ impl <B: BootServices> AcpiProviderInner<B> {
             // The type of the table is unknown at this point, since we're installing from a raw pointer.
             // Because we are installing from raw pointers, information about the type of the table cannot be extracted.
             // SAFETY: The tables in the hob should be valid ACPI tables.
-            let table = unsafe {
-                Table::new_from_ptr(
-                    entry_addr as *const AcpiTableHeader,
-                    None,
-                    &self.memory_manager
-                )?
-            };
+            // TODO: Check the signature to determine the type of table, for allocator type
+            // let table = unsafe {
+            //     Table::new_from_ptr(
+            //         entry_addr as *const AcpiTableHeader,
+            //         &self.memory_manager
+            //     )?
+            // };
 
-            self.install_standard_table(table)?;
+            // self.install_standard_table(table)?;
 
             // If this table points to other system tables, install them too.
             // SAFETY: The tables in the hob should be valid ACPI tables. Reading the 4-byte signature.
@@ -386,7 +386,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
     }
 
     /// Allocates memory for the FADT and adds it to the list of installed tables
-    pub(crate) fn install_fadt(&mut self, mut fadt_info: Table) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_fadt(&mut self, mut fadt_info: Table<A>) -> Result<TableKey, AcpiError> {
         if self.acpi_tables.get(&Self::FADT_KEY).is_some() {
             // FADT already installed. By spec, only one copy of the FADT should ever be installed, and it cannot be replaced.
             log::error!("Failed to install FADT: FADT already installed");
@@ -450,7 +450,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
 
     /// Installs the DSDT.
     /// The DSDT is not added to the list of XSDT entries.
-    pub(crate) fn install_dsdt(&mut self, mut dsdt_info: Table) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_dsdt(&mut self, mut dsdt_info: Table<A>) -> Result<TableKey, AcpiError> {
         // If the FADT is already installed, update the FACP's x_dsdt field.
         // If not, it will be updated when the FACP is installed.
         if let Some(facp) = self.acpi_tables.get_mut(&Self::FADT_KEY) {
@@ -473,7 +473,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
     }
 
     /// Adds the table to the list of installed ACPI tables and sets up metadata.
-    pub(crate) fn install_standard_table(&mut self, mut table_info: Table) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_standard_table(&mut self, mut table_info: Table<A>) -> Result<TableKey, AcpiError> {
         // By spec, table keys can be assigned in any manner as long as they are unique for each newly installed table.
         // For simplicity, we use a monotonically increasing key.
         let curr_key = TableKey(self.next_table_key);
@@ -780,7 +780,7 @@ impl <B: BootServices> AcpiProviderInner<B> {
     /// assuming we correctly exclude system tables (XSDT, RSDP, FACS, and DSDT), which by spec are not included in the list of installed tables.
     ///
     /// The only downside to the above approach is the non-constant access time for a particular index.
-    pub(crate) fn get_table_at_idx(&mut self, idx: usize) -> Result<(TableKey, &Table), AcpiError> {
+    pub(crate) fn get_table_at_idx(&mut self, idx: usize) -> Result<(TableKey, &Table<A>), AcpiError> {
         // Find the idx-th non-system table.
         // Since FFI expects we return the same pointer to the same table in memory, a clone is required.
         let found_table = self.acpi_tables.iter().nth(idx).map(|(&key, table)| (key, table));

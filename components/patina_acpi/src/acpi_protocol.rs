@@ -95,36 +95,38 @@ impl AcpiTableProtocol {
 
         let global_mm = STANDARD_ACPI_PROVIDER.critical_section(|inner| inner.memory_manager.clone());
         // SAFETY: `acpi_table_buffer` has been validated as non-null and of sufficient size above.
-        let acpi_table =
-            unsafe { Table::new_from_ptr(acpi_table_buffer as *const AcpiTableHeader, None, &global_mm) };
+        // TODO: Check the signature to determine the type of table, for allocator type.
+        // let acpi_table =
+        //     unsafe { Table::new_from_ptr(acpi_table_buffer as *const AcpiTableHeader, None, &global_mm) };
 
-        if let Ok(table) = acpi_table {
-            let signature = table.signature();
-            let install_result = STANDARD_ACPI_PROVIDER.install_acpi_table(table);
+        // if let Ok(table) = acpi_table {
+        //     let signature = table.signature();
+        //     let install_result = STANDARD_ACPI_PROVIDER.install_acpi_table(table);
 
-            match install_result {
-                Ok(key) => {
-                    // SAFETY: The caller must ensure the buffer passed in for the key is appropriately sized and non-null.
-                    unsafe { *table_key = key.0 };
-                    log::trace!(
-                        "ACPI protocol: Successfully installed table with signature: 0x{:08X}, key: {}",
-                        signature,
-                        key.0
-                    );
-                }
-                Err(e) => {
-                    log::error!(
-                        "ACPI protocol: Install failed with error {:?} for table with signature: 0x{:08X}",
-                        e,
-                        signature,
-                    );
-                    return e.into();
-                }
-            }
-            efi::Status::SUCCESS
-        } else {
-            efi::Status::OUT_OF_RESOURCES
-        }
+        //     match install_result {
+        //         Ok(key) => {
+        //             // SAFETY: The caller must ensure the buffer passed in for the key is appropriately sized and non-null.
+        //             unsafe { *table_key = key.0 };
+        //             log::trace!(
+        //                 "ACPI protocol: Successfully installed table with signature: 0x{:08X}, key: {}",
+        //                 signature,
+        //                 key.0
+        //             );
+        //         }
+        //         Err(e) => {
+        //             log::error!(
+        //                 "ACPI protocol: Install failed with error {:?} for table with signature: 0x{:08X}",
+        //                 e,
+        //                 signature,
+        //             );
+        //             return e.into();
+        //         }
+        //     }
+        //     efi::Status::SUCCESS
+        // } else {
+        //     efi::Status::OUT_OF_RESOURCES
+        // }
+        efi::Status::OUT_OF_RESOURCES
     }
 
     /// Removes an ACPI table from the XSDT.

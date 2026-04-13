@@ -13,6 +13,7 @@ use crate::{
     service::{AcpiProvider, AcpiTableManager},
 };
 use alloc::vec::Vec;
+use zerocopy::IntoBytes;
 
 use core::mem;
 
@@ -115,7 +116,7 @@ impl AcpiComponent {
         };
 
         // Write the XSDT header to the allocated memory.
-        xsdt_allocated_bytes.extend(xsdt_info.header.hdr_to_bytes());
+        xsdt_allocated_bytes.extend(xsdt_info.header.as_bytes());
         // Fill in trailing space with zeros so it is accessible (Vec length != Vec capacity).
         xsdt_allocated_bytes.extend(core::iter::repeat_n(0u8, xsdt_size - ACPI_HEADER_LEN));
 

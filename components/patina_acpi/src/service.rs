@@ -11,12 +11,12 @@
 use core::any::TypeId;
 
 use alloc::vec::Vec;
-use patina::component::service::{IntoService, Service, memory::MemoryManager};
+use patina::{component::service::{IntoService, Service, memory::MemoryManager}, efi_types::EfiMemoryType};
 use r_efi::efi;
 
 use crate::{
-    acpi_table::{Table, AcpiTableHeader},
-    error::AcpiError,
+    acpi_table::{AcpiTableHeader, Table},
+    error::AcpiError, signature,
 };
 
 #[cfg(any(test, feature = "mockall"))]
@@ -67,7 +67,13 @@ impl AcpiTableManager {
     /// The returned `TableKey` can be used to uninstall the table later.
     /// It is an opaque reference to the table and should not be manipulated directly.
     pub fn install_acpi_table<T: AcpiTable + 'static>(&self, table: T) -> Result<TableKey, AcpiError> {
-        let acpi_table = Table::new(table, &self.memory_manager)?;
+        let memory_type = match table.header().signature {
+            signature::UEFI => EfiMemoryType::ACPIMemoryNVS,
+            _ => EfiMemoryType::ACPIReclaimMemory,
+        };
+        // ACPIReclainMemory and ACPIMemoryNVS are 
+        let allocator = self.memory_manager.get_allocator(memory_type).map_err(|_| AcpiError::AllocationFailed)?;
+        let acpi_table = Table::new_in(table, allocator)?;
         self.provider_service.install_acpi_table(acpi_table)
     }
 
@@ -122,7 +128,7 @@ impl AcpiTableManager {
     /// This can be used in place of `get_acpi_table`, or in conjunction with it to retrieve a specific table reference.
     ///
     /// The RSDP and XSDT are not included in the list of iterable ACPI tables.
-    pub fn iter_tables(&self) -> Vec<&Table> {
+    pub fn iter_tables(&self) -> Vec<&Table<&'static dyn alloc::alloc::Allocator>> {
         self.provider_service.collect_tables()
     }
 }
@@ -177,7 +183,6 @@ mod tests {
                     header: AcpiTableHeader { length: mem::size_of::<AcpiFadt>() as u32, ..Default::default() },
                     ..Default::default()
                 },
-                &Service::mock(Box::new(StdMemoryManager::new())),
             )
             .unwrap())))
         }

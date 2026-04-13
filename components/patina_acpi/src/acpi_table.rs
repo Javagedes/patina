@@ -13,12 +13,12 @@
 use crate::{
     error::AcpiError, service::AcpiTable, signature::{self, ACPI_CHECKSUM_OFFSET}
 };
-use alloc::{rc::Rc, boxed::Box, vec::Vec};
+use alloc::{rc::Rc, boxed::Box, vec::Vec, alloc::Allocator};
 use patina::{
     base::SIZE_4GB,
     component::service::{
         Service,
-        memory::{AllocationOptions, MemoryManager, PageAllocationStrategy, PageFree},
+        memory::{AllocationOptions, MemoryManager, PageAllocationStrategy},
     },
     efi_types::EfiMemoryType,
     uefi_size_to_pages,
@@ -30,6 +30,7 @@ use core::{
     mem,
     ptr,
 };
+use std::collections::btree_map::Values;
 
 use zerocopy_derive::*;
 
@@ -182,7 +183,6 @@ pub struct AcpiFacs {
     pub(crate) version: u8,
     pub(crate) reserved: [u8; 31],
 }
-
 /// Represents the DSDT for ACPI 2.0+.
 /// The DSDT is not present in the list of installed ACPI tables; instead, it is only accessible through the FADT's `x_dsdt` field.
 /// The DSDT has a standard header followed by variable-length AML bytecode.
@@ -275,6 +275,7 @@ impl AcpiXsdtMetadata {
     }
 }
 
+unsafe impl AcpiTable for AcpiTableHeader {}
 /// Represents a standard ACPI header.
 /// Equivalent to EFI_ACPI_DESCRIPTION_HEADER.
 #[repr(C, packed)]
@@ -312,39 +313,6 @@ impl AcpiTableHeader {
         unsafe { ptr::read_unaligned(ptr::addr_of!((*ptr).length)) }
     }
 
-    /// Serialize an `AcpiTableHeader` into a `Vec<u8>` in ACPI's canonical layout.
-    pub fn hdr_to_bytes(&self) -> Vec<u8> {
-        // Pre‑allocate exactly the right length
-        let mut buf = Vec::with_capacity(mem::size_of::<Self>());
-
-        // Signature (4 bytes)
-        buf.extend_from_slice(&self.signature.to_le_bytes());
-
-        // Length (4 bytes, little‑endian)
-        buf.extend_from_slice(&self.length.to_le_bytes());
-
-        // Revision (1 byte), Checksum (1 byte)
-        buf.push(self.revision);
-        buf.push(self.checksum);
-
-        // OEM ID (6 bytes)
-        buf.extend_from_slice(&self.oem_id);
-
-        // OEM Table ID (8 bytes)
-        buf.extend_from_slice(&self.oem_table_id);
-
-        // OEM Revision (4 bytes, little‑endian)
-        buf.extend_from_slice(&self.oem_revision.to_le_bytes());
-
-        // Creator ID (4 bytes, little‑endian)
-        buf.extend_from_slice(&self.creator_id.to_le_bytes());
-
-        // Creator Revision (4 bytes, little‑endian)
-        buf.extend_from_slice(&self.creator_revision.to_le_bytes());
-
-        buf
-    }
-
     pub fn signature(&self) -> u32 {
         self.signature
     }
@@ -367,27 +335,54 @@ impl AcpiTableHeader {
 }
 
 #[derive(Clone, Debug)]
-pub struct Table {
-    pub(crate) data: Rc<[u8], PageFree>,
+pub struct Table<A: Allocator = &'static dyn alloc::alloc::Allocator> {
+    pub(crate) data: Rc<[u8], A>,
     pub(crate) type_id: core::any::TypeId,
 }
 
-impl Table {
-    /// Creates a new AcpiTable from a given table.
-    ///
-    /// For this function, the header `length` field must exactly equal `size_of::<T>()`. Because
-    /// `table` is passed by value, only `size_of::<T>()` bytes are guaranteed to be available.
-    /// A `length` that exceeds the struct size could cause an out-of-bounds copy in the underlying
-    /// allocation.
-    ///
-    /// Tables with trailing variable-length data (e.g. header followed by AML bytecode) must be
-    /// installed through the pointer-based [`Self::new_from_ptr`] path instead, where the caller
-    /// guarantees that `length` bytes are readable at the source table address.
-    pub fn new<T: AcpiTable + 'static>(table: T, mm: &Service<dyn MemoryManager>) -> Result<Self, AcpiError> {
-        // SAFETY: AcpiTable unsafe requirements guarantees that the table starts with a valid AcpiTableHeader and has a C-compatible layout.
-        unsafe {
-            Table::new_from_ptr(table.header() as *const _, Some(TypeId::of::<T>()), mm)
+impl Table<alloc::alloc::Global> {
+    pub fn new<T: AcpiTable + 'static>(table: T) -> Result<Self, AcpiError> {
+        Self::new_in(table, alloc::alloc::Global)
+    }
+}
+
+impl<A: Allocator> Table<A> {
+    pub fn new_in<T: AcpiTable + 'static>(table: T, alloc: A) -> Result<Self, AcpiError> {
+        let len = table.header().length as usize;
+
+        let table = Self::new_in_from_bytes(table.as_bytes(), alloc)?.with_type_id::<T>();
+
+        if table.as_bytes().len() != len {
+            return Err(AcpiError::InvalidTableFormat);
         }
+
+        Ok(table)
+    }
+
+    fn with_type_id<T: 'static>(mut self) -> Self {
+        self.type_id = TypeId::of::<T>();
+        self
+    }
+
+    fn new_in_from_bytes(bytes: &[u8], alloc: A) -> Result<Self, AcpiError> {
+        let len = bytes.len();
+        let mut rc = Rc::new_zeroed_slice_in(len, alloc);
+
+        // SAFETY: src is valid for reads of bytes.len() as the data comes from the byte slice.
+        // SAFETY: dst is valid for writes of bytes.len() as it was just allocated with that length above.
+        // SAFETY: the underlying data is a `u8` so there are no alignment concerns.
+        // SAFETY: src and dst do not overlap.
+        let rc = unsafe {
+            ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                Rc::get_mut(&mut rc).expect("Owned").as_mut_ptr().cast::<u8>(),
+                len,
+            );
+            // SAFETY: The above copy initializes the Rc with valid data
+            rc.assume_init()
+        };
+
+        Ok(Self { data: rc, type_id: TypeId::of::<AcpiTableHeader>() })
     }
 
     /// Creates a new Table from a raw pointer.
@@ -399,55 +394,23 @@ impl Table {
     /// - Caller must ensure `table_length` correctly specify the length of the table, including the header and any trailing data bytes.
     pub(crate) unsafe fn new_from_ptr(
         header_ptr: *const AcpiTableHeader,
-        type_id: Option<TypeId>,
-        mm: &Service<dyn MemoryManager>,
+        alloc: A,
     ) -> Result<Self, AcpiError> {
         if header_ptr.is_null() {
             return Err(AcpiError::NullTablePtr);
         }
+        // TODO: FACS needs its own special handling outside of these APIs because it needs to be allocated in the lower 32-bit address space. This is a workaround for Windows' reliance on the legacy 32-bit FACS pointer in the FADT, and can be removed when Windows no longer relies on this field.
+        // TODO: UEFI signature needs to use ACPIMemoryNVS
 
-        // SAFETY: If function preconditions are met, the pointer is valid and points to a valid ACPI table header.
-        let (table_signature, table_length) = unsafe { ((*header_ptr).signature, (*header_ptr).length as usize) };
+        // SAFETY: src is valid for reads due to caller unsafe contract.
+        // SAFETY: src points to a valid ACPI Table header per caller unsafe contract.
+        let header: AcpiTableHeader = unsafe { ptr::read_unaligned(header_ptr) };
+        let len = header.length as usize;
 
-        // FACS and UEFI tables must always be located in NVS (by spec).
-        let allocator_type = match table_signature {
-            signature::FACS | signature::UEFI => EfiMemoryType::ACPIMemoryNVS,
-            _ => EfiMemoryType::ACPIReclaimMemory,
-        };
-
-        // The current Windows implementation uses the legacy 32-bit FACS pointer in the FADT.
-        // As such, the FACS must be allocated in the lower 32-bit address space.
-        // This workaround can be removed when Windows no longer relies on this field.
-        let allocation_strategy = if table_signature == signature::FACS {
-            PageAllocationStrategy::MaxAddress(SIZE_4GB - 1)
-        } else {
-            PageAllocationStrategy::Any
-        };
-
-        // Allocate memory in appropriate ACPI region, up to page granularity.
-        let table_page_alloc = mm
-            .allocate_pages(
-                uefi_size_to_pages!(table_length),
-                AllocationOptions::new().with_memory_type(allocator_type).with_strategy(allocation_strategy),
-            )
-            .map_err(|_e| AcpiError::AllocationFailed)?;
-
-        let mut bytes = table_page_alloc.into_boxed_slice::<u8>();
-
-
-        // Copy entire table into the new allocation.
-        // SAFETY: If function preconditions are met, the pointer is valid and points to a valid ACPI table header.
-        // SAFETY: If function preconditions are met, the table length is guaranteed to be correct.
-        // SAFETY: If allocation succeeds, the destination is valid for writes of `table_length` bytes.
-        unsafe {
-            ptr::copy_nonoverlapping(header_ptr as *const u8, bytes.as_mut_ptr(), table_length);
-        }
-
-        // Store the table type for convenience.
-        // If the type is unknown (for example, coming over C FFI interface), use AcpiTableHeader as a fallback.
-        let type_id = type_id.unwrap_or(TypeId::of::<AcpiTableHeader>());
-
-        Ok(Self { data: Rc::from(bytes), type_id })
+        // SAFETY: data is non-null via validation above
+        // SAFETY: data is valid for reads of `len` bytes due to caller unsafe contract and correct length specification.
+        let bytes = unsafe { core::slice::from_raw_parts(header_ptr as *const u8, len) };
+        return Self::new_in_from_bytes(bytes, alloc)
     }
 
     pub fn signature(&self) -> u32 {
@@ -513,11 +476,10 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
-    use alloc::boxed::Box;
     use patina::component::service::memory::StdMemoryManager;
 
     use super::*;
-    use core::{mem, ptr::NonNull};
+    use core::mem;
 
     unsafe impl AcpiTable for TestTable {}
     #[repr(C)]
@@ -547,7 +509,7 @@ mod tests {
             body: [10, 20, 30], // some payload bytes
         };
 
-        let mut acpi_table = Table::new(test_table, &Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        let mut acpi_table = Table::new(test_table).unwrap();
 
         // Update the checksum (use standard checksum offset since it has a standard header).
         assert!(acpi_table.update_checksum().is_ok());
@@ -560,98 +522,90 @@ mod tests {
         assert_eq!(total, 0, "entire table did not sum to zero");
     }
 
-//     #[test]
-//     fn test_new_from_ptr_creates_valid_acpi_table() {
-//         // Build a mock table.
-//         let test_table = TestTable {
-//             header: AcpiTableHeader {
-//                 signature: TEST_SIGNATURE,
-//                 length: (mem::size_of::<TestTable>()) as u32,
-//                 revision: 2,
-//                 checksum: 0,
-//                 oem_id: [1, 2, 3, 4, 5, 6],
-//                 oem_table_id: *b"test_tes",
-//                 oem_revision: 0xDEADBEEF,
-//                 creator_id: 0xCAFEBABE,
-//                 creator_revision: 0xFEEDFACE,
-//             },
-//             body: [42, 43, 44],
-//         };
+    #[test]
+    fn test_new_from_ptr_creates_valid_acpi_table() {
+        // Build a mock table.
+        let test_table = TestTable {
+            header: AcpiTableHeader {
+                signature: TEST_SIGNATURE,
+                length: (mem::size_of::<TestTable>()) as u32,
+                revision: 2,
+                checksum: 0,
+                oem_id: [1, 2, 3, 4, 5, 6],
+                oem_table_id: *b"test_tes",
+                oem_revision: 0xDEADBEEF,
+                creator_id: 0xCAFEBABE,
+                creator_revision: 0xFEEDFACE,
+            },
+            body: [42, 43, 44],
+        };
 
-//         // Allocate the table on the heap.
-//         let boxed = Box::new(test_table);
-//         let raw_ptr = Box::into_raw(boxed);
+        // Allocate the table on the heap.
+        let boxed = Box::new(test_table);
+        let raw_ptr = Box::into_raw(boxed);
 
-//         let mm: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
+        let mm: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
+        let alloc = mm.get_allocator(EfiMemoryType::ACPIReclaimMemory).unwrap();
 
-//         // SAFETY: raw_ptr points to a valid TestTable with a valid header.
-//         let acpi_table =
-//             unsafe { AcpiTable::new_from_ptr(raw_ptr as *const AcpiTableHeader, Some(TypeId::of::<TestTable>()), &mm) }
-//                 .unwrap();
+        // SAFETY: raw_ptr points to a valid TestTable with a valid header.
+        let acpi_table =
+            unsafe { Table::new_from_ptr(raw_ptr as *const AcpiTableHeader, mm.get_allocator(EfiMemoryType::ACPIReclaimMemory).unwrap()) }
+                .unwrap();
 
-//         // Check signature and header fields.
-//         assert_eq!(acpi_table.signature(), TEST_SIGNATURE);
-//         let header = acpi_table.header();
-//         assert_eq!(header.length(), mem::size_of::<TestTable>() as u32);
-//         assert_eq!(header.revision, 2);
-//         assert_eq!(header.oem_id, [1, 2, 3, 4, 5, 6]);
-//         assert_eq!(header.oem_table_id, *b"test_tes");
-//         assert_eq!(header.oem_revision(), 0xDEADBEEF);
-//         assert_eq!(header.creator_id(), 0xCAFEBABE);
-//         assert_eq!(header.creator_revision(), 0xFEEDFACE);
-//         // SAFETY: The table type `TestTable` is constructed by the test.
-//         assert_eq!(unsafe { acpi_table.as_ref::<TestTable>().body }, [42, 43, 44]);
+        // Check signature and header fields.
+        assert_eq!(acpi_table.signature(), TEST_SIGNATURE);
+        let header = acpi_table.header();
+        assert_eq!(header.length(), mem::size_of::<TestTable>() as u32);
+        assert_eq!(header.revision, 2);
+        assert_eq!(header.oem_id, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(header.oem_table_id, *b"test_tes");
+        assert_eq!(header.oem_revision(), 0xDEADBEEF);
+        assert_eq!(header.creator_id(), 0xCAFEBABE);
+        assert_eq!(header.creator_revision(), 0xFEEDFACE);
+        assert_eq!(acpi_table.as_ref::<TestTable>().body, [42, 43, 44]);
 
-//         // Check that the body bytes are correct.
-//         // SAFETY: The length and table are constructed by the test.
-//         let bytes = unsafe { acpi_table.as_bytes() };
-//         let body_offset = mem::size_of::<AcpiTableHeader>();
-//         assert_eq!(&bytes[body_offset..body_offset + 3], &[42, 43, 44]);
+        // Check that the body bytes are correct.
+        let bytes = acpi_table.as_bytes();
+        let body_offset = mem::size_of::<AcpiTableHeader>();
+        assert_eq!(&bytes[body_offset..body_offset + 3], &[42, 43, 44]);
 
-//         // Verify new_from_ptr correctly copies trailing data beyond the struct.
-//         let trailing: &[u8] = &[0xAA, 0xBB, 0xCC, 0xDD];
-//         let struct_size = mem::size_of::<TestTable>();
-//         let total_len = struct_size + trailing.len();
-//         let mut buf = vec![0u8; total_len];
+        // Verify new_from_ptr correctly copies trailing data beyond the struct.
+        let trailing: &[u8] = &[0xAA, 0xBB, 0xCC, 0xDD];
+        let struct_size = mem::size_of::<TestTable>();
+        let total_len = struct_size + trailing.len();
+        let mut buf = vec![0u8; total_len];
 
-//         // SAFETY: raw_ptr still points to the heap-allocated TestTable from above.
-//         unsafe {
-//             ptr::copy_nonoverlapping(raw_ptr as *const u8, buf.as_mut_ptr(), struct_size);
-//         }
-//         // Follow up with the trailing data.
-//         buf[struct_size..].copy_from_slice(trailing);
-//         // Patch the length field to cover the trailing data.
-//         buf[4..8].copy_from_slice(&(total_len as u32).to_le_bytes());
+        // SAFETY: raw_ptr still points to the heap-allocated TestTable from above.
+        unsafe {
+            ptr::copy_nonoverlapping(raw_ptr as *const u8, buf.as_mut_ptr(), struct_size);
+        }
+        // Follow up with the trailing data.
+        buf[struct_size..].copy_from_slice(trailing);
+        // Patch the length field to cover the trailing data.
+        buf[4..8].copy_from_slice(&(total_len as u32).to_le_bytes());
 
-//         // SAFETY: buf points to a contiguous buffer of total_len bytes with a valid header.
-//         let table_with_trailing =
-//             unsafe { AcpiTable::new_from_ptr(buf.as_ptr() as *const AcpiTableHeader, None, &mm) }.unwrap();
-//         assert_eq!(table_with_trailing.header().length(), total_len as u32);
+        // SAFETY: buf points to a contiguous buffer of total_len bytes with a valid header.
+        let table_with_trailing =
+            unsafe { Table::new_from_ptr(buf.as_ptr() as *const AcpiTableHeader, alloc) }.unwrap();
+        assert_eq!(table_with_trailing.header().length(), total_len as u32);
 
-//         // SAFETY: The length is set correctly by the test.
-//         let all_bytes = unsafe { table_with_trailing.as_bytes() };
-//         assert_eq!(&all_bytes[struct_size..], trailing);
-//     }
+        let all_bytes = table_with_trailing.as_bytes();
+        assert_eq!(&all_bytes[struct_size..], trailing);
+    }
 
-//     #[test]
-//     fn test_new_rejects_length_greater_than_struct_size() {
-//         let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 100, ..Default::default() };
-//         let mm: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
+    #[test]
+    fn test_new_rejects_length_greater_than_struct_size() {
+        let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 100, ..Default::default() };
+        let result = Table::new(header);
+        assert!(matches!(result, Err(AcpiError::InvalidTableFormat)));
+    }
 
-//         // length > size_of::<AcpiTableHeader>(), so it should be rejected.
-//         // SAFETY: The header has a valid layout. This tests that the length mismatch is caught.
-//         let result = unsafe { AcpiTable::new(header, &mm) };
-//         assert!(matches!(result, Err(AcpiError::InvalidTableFormat)));
-//     }
+    #[test]
+    fn test_new_rejects_length_less_than_struct_size() {
+        let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 10, ..Default::default() };
 
-//     #[test]
-//     fn test_new_rejects_length_less_than_struct_size() {
-//         let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 10, ..Default::default() };
-//         let mm: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
-
-//         // length < size_of::<AcpiTableHeader>(), so it should be rejected.
-//         // SAFETY: The header has a valid layout. This tests that the length mismatch is caught.
-//         let result = unsafe { AcpiTable::new(header, &mm) };
-//         assert!(matches!(result, Err(AcpiError::InvalidTableFormat)));
-//     }
+        // length < size_of::<AcpiTableHeader>(), so it should be rejected.
+        let result = Table::new(header);
+        assert!(matches!(result, Err(AcpiError::InvalidTableFormat)));
+    }
 }
