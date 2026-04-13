@@ -12,13 +12,11 @@
 use alloc::collections::btree_map::BTreeMap;
 use core::{
     any::TypeId,
-    cell::OnceCell,
+    cell::UnsafeCell,
     ffi::c_void,
     mem::{self},
     slice,
-    sync::atomic::{AtomicUsize, Ordering},
 };
-use std::cell::UnsafeCell;
 
 use patina::{
     base::SIZE_4GB,
