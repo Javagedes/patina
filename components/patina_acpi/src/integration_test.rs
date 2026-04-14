@@ -20,18 +20,27 @@ use r_efi::efi;
 use crate::{
     acpi_protocol::{AcpiGetProtocol, AcpiTableProtocol},
     acpi_table::AcpiTableHeader,
-    service::AcpiTableManager,
+    service::{AcpiTable, AcpiTableManager},
     signature::{self, ACPI_VERSIONS_GTE_2},
 };
 
+use zerocopy_derive::*;
+
+// SAFETY: TODO
+unsafe impl AcpiTable for MockSmallTable {}
+
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct MockSmallTable {
     _header: AcpiTableHeader,
 }
 
+// SAFETY: TODO
+unsafe impl AcpiTable for MockLargeTable {}
+
+// SAFETY: TODO
 #[repr(C)]
-#[derive(Clone, Default)]
+#[derive(Clone, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct MockLargeTable {
     header: AcpiTableHeader,
     data: [u8; 32],
@@ -51,8 +60,7 @@ fn acpi_test(table_manager: Service<AcpiTableManager>) -> patina_test::error::Re
         },
     };
 
-    // SAFETY: The constructed table is a valid ACPI table.
-    let key1 = unsafe { table_manager.install_acpi_table(mock_table1) }.expect("Should install table.");
+    let key1 = table_manager.install_acpi_table(mock_table1).expect("Should install table.");
 
     // Install another table.
     let mock_table2 = MockLargeTable {
@@ -64,14 +72,12 @@ fn acpi_test(table_manager: Service<AcpiTableManager>) -> patina_test::error::Re
         data: [1; 32],
     };
 
-    // SAFETY: The constructed table is a valid ACPI table.
-    let key2 = unsafe { table_manager.install_acpi_table(mock_table2) }.expect("Should install table.");
+    let key2 = table_manager.install_acpi_table(mock_table2).expect("Should install table.");
 
     // Install an invalid ACPI table (too small).
     let invalid_table =
         AcpiTableHeader { signature: signature::MADT, length: (signature::MADT_SIZE - 2) as u32, ..Default::default() };
-    // SAFETY: invalid_table has a valid layout, but an invalid length value, so this should return an error.
-    u_assert!(unsafe { table_manager.install_acpi_table(invalid_table) }.is_err(), "Should not install invalid table.");
+    u_assert!(table_manager.install_acpi_table(invalid_table).is_err(), "Should not install invalid table.");
 
     // Verify only valid tables are in the iterator.
     let tables = table_manager.iter_tables();

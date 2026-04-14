@@ -12,7 +12,7 @@
 use alloc::collections::btree_map::BTreeMap;
 use core::{
     any::TypeId,
-    cell::OnceCell,
+    cell::{OnceCell, UnsafeCell},
     ffi::c_void,
     mem::{self},
     slice,
@@ -28,11 +28,10 @@ use patina::{
     },
     efi_types::EfiMemoryType,
     tpl_mutex::TplMutex,
-    uefi_size_to_pages,
 };
 
 use crate::{
-    acpi_table::{AcpiDsdt, AcpiFacs, AcpiFadt, AcpiRsdp, AcpiTable, AcpiTableHeader, AcpiXsdt, AcpiXsdtMetadata},
+    acpi_table::{AcpiDsdt, AcpiFacs, AcpiFadt, AcpiRsdp, AcpiTableHeader, AcpiXsdt, AcpiXsdtMetadata, Table},
     alloc::{vec, vec::Vec},
     error::AcpiError,
     hob::AcpiMemoryHob,
@@ -48,7 +47,7 @@ pub static STANDARD_ACPI_PROVIDER: StandardAcpiProvider<StandardBootServices> = 
 pub(crate) struct StandardAcpiProvider<B: BootServices + 'static> {
     /// Platform-installed ACPI tables.
     /// If installing a non-standard ACPI table, the platform is responsible for writing its own handler and parser.
-    pub(crate) acpi_tables: TplMutex<BTreeMap<TableKey, AcpiTable>, B>,
+    pub(crate) acpi_tables: UnsafeCell<BTreeMap<TableKey, Table>>,
     /// Stores a monotonically increasing unique table key for installation.
     next_table_key: AtomicUsize,
     /// Stores notify callbacks, which are called upon table installation.
@@ -86,7 +85,7 @@ where
     /// Attempting to use `StandardAcpiProvider` before initialization will cause a panic.
     pub const fn new_uninit() -> Self {
         Self {
-            acpi_tables: TplMutex::new_uninit(Tpl::NOTIFY, BTreeMap::new()),
+            acpi_tables: UnsafeCell::new(BTreeMap::new()),
             next_table_key: AtomicUsize::new(Self::FIRST_FREE_KEY),
             notify_list: TplMutex::new_uninit(Tpl::NOTIFY, vec![]),
             boot_services: OnceCell::new(),
@@ -108,7 +107,6 @@ where
             return Err(AcpiError::BootServicesAlreadyInitialized);
         }
 
-        self.acpi_tables.init(bs.clone());
         self.notify_list.init(bs.clone());
         self.xsdt_metadata.init(bs.clone());
         self.rsdp.init(bs.clone());
@@ -135,6 +133,17 @@ where
         let mut write_guard = self.xsdt_metadata.lock();
         *write_guard = Some(xsdt_data);
     }
+
+    pub fn acpi_tables(&self) -> &BTreeMap<TableKey, Table> {
+        // SAFETY: TODO
+        unsafe { &*self.acpi_tables.get() }
+    }
+
+    #[allow(clippy::mut_from_ref)] // TODO: This will be fixed.
+    pub fn acpi_tables_mut(&self) -> &mut BTreeMap<TableKey, Table> {
+        // SAFETY: TODO
+        unsafe { &mut *self.acpi_tables.get() }
+    }
 }
 
 /// Implementations of ACPI services.
@@ -145,7 +154,7 @@ impl<B> AcpiProvider for StandardAcpiProvider<B>
 where
     B: BootServices,
 {
-    fn install_acpi_table(&self, table: AcpiTable) -> Result<TableKey, AcpiError> {
+    fn install_acpi_table(&self, table: Table) -> Result<TableKey, AcpiError> {
         // Based on the ACPI spec, implementations can choose to disallow duplicates or incorporate them into existing installed tables.
         // For simplicity, this implementation rejects attempts to install a new XSDT when one already exists.
         if table.signature() == signature::XSDT {
@@ -174,9 +183,9 @@ where
         Ok(())
     }
 
-    fn get_acpi_table(&self, table_key: TableKey) -> Result<AcpiTable, AcpiError> {
-        let result = self.acpi_tables.lock().get(&table_key).cloned().ok_or(AcpiError::InvalidTableKey);
-        if let Ok(ref table) = result {
+    fn get_acpi_table(&self, table_key: TableKey) -> Result<&Table, AcpiError> {
+        let result = self.acpi_tables().get(&table_key).ok_or(AcpiError::InvalidTableKey);
+        if let Ok(table) = result {
             log::trace!("Successfully retrieved ACPI table with signature: 0x{:08X}", table.signature());
         } else {
             log::error!("Failed to get ACPI table with key: {} - invalid table key", table_key.0);
@@ -201,8 +210,8 @@ where
 
     /// Iterate over installed tables in the ACPI table list.
     /// The RSDP, FACS, and DSDT are not considered part of the list of installed tables and should not be iterated over.
-    fn collect_tables(&self) -> Vec<AcpiTable> {
-        self.acpi_tables.lock().values().cloned().collect()
+    fn collect_tables(&self) -> Vec<&Table> {
+        self.acpi_tables().values().collect()
     }
 }
 
@@ -212,20 +221,21 @@ where
 {
     /// Installs the FACS.
     /// SAFETY: The caller must ensure that the table is valid and correctly formatted.
-    pub(crate) unsafe fn install_facs(&self, facs_info: AcpiTable) -> Result<TableKey, AcpiError> {
+    pub(crate) unsafe fn install_facs(&self, facs_info: Table) -> Result<TableKey, AcpiError> {
         // Update the FADT's address pointer to the FACS.
-        if let Some(fadt_table) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+        if let Some(fadt_table) = self.acpi_tables_mut().get_mut(&Self::FADT_KEY)
+            && let Some(facs) = facs_info.as_ref::<AcpiFacs>()
+            && let Some(fadt) = fadt_table.as_mut::<AcpiFadt>()
+        {
             // SAFETY: We verify the table's signature before calling `install_facs`.
-            let facs_addr = unsafe { facs_info.as_ref::<AcpiFacs>() } as *const AcpiFacs as u64;
+            let facs_addr = facs as *const AcpiFacs as u64;
             log::trace!("Updating FADT with FACS address: 0x{:016X}", facs_addr);
-            // SAFETY: The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-            unsafe { fadt_table.as_mut::<AcpiFadt>().set_x_firmware_ctrl(facs_addr) };
-            // SAFETY: The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-            unsafe { fadt_table.as_mut::<AcpiFadt>().inner._firmware_ctrl = facs_addr as u32 };
+            fadt.set_x_firmware_ctrl(facs_addr);
+            fadt.inner._firmware_ctrl = facs_addr as u32;
             fadt_table.update_checksum()?;
         }
 
-        self.acpi_tables.lock().insert(Self::FACS_KEY, facs_info);
+        self.acpi_tables_mut().insert(Self::FACS_KEY, facs_info);
 
         self.checksum_common_tables();
 
@@ -282,7 +292,7 @@ where
 
             // SAFETY: The tables in the HOB should be valid ACPI tables.
             let facs_table = unsafe {
-                AcpiTable::new_from_ptr(
+                Table::new_from_ptr(
                     fadt.x_firmware_ctrl() as *const AcpiTableHeader,
                     Some(TypeId::of::<AcpiFacs>()),
                     self.memory_manager.get().ok_or(AcpiError::ProviderNotInitialized)?,
@@ -301,7 +311,7 @@ where
 
             // SAFETY: The tables in the HOB should be valid ACPI tables.
             let dsdt_table = unsafe {
-                AcpiTable::new_from_ptr(
+                Table::new_from_ptr(
                     fadt.x_dsdt() as *const AcpiTableHeader,
                     Some(TypeId::of::<AcpiDsdt>()),
                     self.memory_manager.get().ok_or(AcpiError::ProviderNotInitialized)?,
@@ -352,7 +362,7 @@ where
             // Because we are installing from raw pointers, information about the type of the table cannot be extracted.
             // SAFETY: The tables in the hob should be valid ACPI tables.
             let table = unsafe {
-                AcpiTable::new_from_ptr(
+                Table::new_from_ptr(
                     entry_addr as *const AcpiTableHeader,
                     None,
                     self.memory_manager.get().ok_or(AcpiError::ProviderNotInitialized)?,
@@ -375,19 +385,18 @@ where
     }
 
     /// Allocates memory for the FADT and adds it to the list of installed tables
-    pub(crate) fn install_fadt(&self, mut fadt_info: AcpiTable) -> Result<TableKey, AcpiError> {
-        if self.acpi_tables.lock().get(&Self::FADT_KEY).is_some() {
+    pub(crate) fn install_fadt(&self, mut fadt_info: Table) -> Result<TableKey, AcpiError> {
+        if self.acpi_tables().get(&Self::FADT_KEY).is_some() {
             // FADT already installed. By spec, only one copy of the FADT should ever be installed, and it cannot be replaced.
             log::error!("Failed to install FADT: FADT already installed");
             return Err(AcpiError::FadtAlreadyInstalled);
         }
 
-        // SAFETY: The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-        let fadt = unsafe { fadt_info.as_mut::<AcpiFadt>() };
+        let fadt = fadt_info.as_mut::<AcpiFadt>().unwrap();
 
         // If the FACS is already installed, update the FADT's x_firmware_ctrl field.
         // If not, it will be updated when the FACS is installed.
-        if let Some(facs) = self.acpi_tables.lock().get(&Self::FACS_KEY) {
+        if let Some(facs) = self.acpi_tables().get(&Self::FACS_KEY) {
             fadt.inner.x_firmware_ctrl = facs.as_ptr() as u64;
 
             // Set the 32-bit pointer to the FACS. (This is an ACPI 1.0 legacy field.)
@@ -402,7 +411,7 @@ where
 
         // If the DSDT is already installed, update the FACP's x_dsdt field.
         // If not, it will be updated when the DSDT is installed.
-        if let Some(dsdt) = self.acpi_tables.lock().get(&Self::DSDT_KEY) {
+        if let Some(dsdt) = self.acpi_tables().get(&Self::DSDT_KEY) {
             fadt.inner.x_dsdt = dsdt.as_ptr() as u64;
         }
 
@@ -416,7 +425,7 @@ where
         let (oem_id, oem_table_id, oem_revision) =
             (fadt_info.header().oem_id, fadt_info.header().oem_table_id, fadt_info.header().oem_revision);
 
-        self.acpi_tables.lock().insert(Self::FADT_KEY, fadt_info);
+        self.acpi_tables_mut().insert(Self::FADT_KEY, fadt_info);
 
         // RSDP derives OEM ID from FADT.
         if let Some(ref mut rsdp) = *self.rsdp.lock() {
@@ -439,20 +448,19 @@ where
 
     /// Installs the DSDT.
     /// The DSDT is not added to the list of XSDT entries.
-    pub(crate) fn install_dsdt(&self, mut dsdt_info: AcpiTable) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_dsdt(&self, mut dsdt_info: Table) -> Result<TableKey, AcpiError> {
         // If the FADT is already installed, update the FACP's x_dsdt field.
         // If not, it will be updated when the FACP is installed.
-        if let Some(facp) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+        if let Some(facp) = self.acpi_tables_mut().get_mut(&Self::FADT_KEY) {
             let dsdt_addr = dsdt_info.as_ptr() as u64;
             log::trace!("Updating FADT with DSDT address: 0x{:016X}", dsdt_addr);
-            // SAFETY: The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-            unsafe { facp.as_mut::<AcpiFadt>() }.inner.x_dsdt = dsdt_addr;
+            facp.as_mut::<AcpiFadt>().unwrap().inner.x_dsdt = dsdt_addr;
             facp.update_checksum()?;
         };
 
         dsdt_info.update_checksum()?;
 
-        self.acpi_tables.lock().insert(Self::DSDT_KEY, dsdt_info);
+        self.acpi_tables_mut().insert(Self::DSDT_KEY, dsdt_info);
 
         // The DSDT is not present in the list of XSDT entries.
         // We use a default key for the DSDT for easy retrieval and modification internally.
@@ -462,7 +470,7 @@ where
     }
 
     /// Adds the table to the list of installed ACPI tables and sets up metadata.
-    pub(crate) fn install_standard_table(&self, mut table_info: AcpiTable) -> Result<TableKey, AcpiError> {
+    pub(crate) fn install_standard_table(&self, mut table_info: Table) -> Result<TableKey, AcpiError> {
         // By spec, table keys can be assigned in any manner as long as they are unique for each newly installed table.
         // For simplicity, we use a monotonically increasing key.
         let curr_key = TableKey(self.next_table_key.fetch_add(1, Ordering::AcqRel));
@@ -485,7 +493,7 @@ where
         );
 
         // Add the table to the internal hashmap of installed tables after all other operations succeed.
-        self.acpi_tables.lock().insert(curr_key, table_info);
+        self.acpi_tables_mut().insert(curr_key, table_info);
 
         Ok(curr_key)
     }
@@ -571,7 +579,7 @@ where
 
     /// Removes a table from the list of installed tables.
     fn remove_table_from_list(&self, table_key: TableKey) -> Result<(), AcpiError> {
-        let table_for_key = self.acpi_tables.lock().remove(&table_key);
+        let table_for_key = self.acpi_tables_mut().remove(&table_key);
 
         if let Some(table_to_delete) = table_for_key {
             let table_addr = table_to_delete.as_ptr() as u64;
@@ -599,38 +607,29 @@ where
             signature::FACS => {
                 log::trace!("Deleting FACS table and updating FADT");
                 // Clear out the FACS pointer in the FADT.
-                if let Some(fadt_table) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
-                    // SAFETY: The FADT signature has been verified before calling `delete_table`.
-                    // The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-                    unsafe { fadt_table.as_mut::<AcpiFadt>() }.set_x_firmware_ctrl(0);
+                if let Some(fadt_table) = self.acpi_tables_mut().get_mut(&Self::FADT_KEY)
+                    && let Some(fadt) = fadt_table.as_mut::<AcpiFadt>()
+                {
+                    fadt.set_x_firmware_ctrl(0);
 
                     // Also clear out the 32-bit pointer to the FACS. (This is an ACPI 1.0 legacy field.)
                     // Ideally this would not be necessary, but the current Windows OS implementation relies on this field.
                     // This workaround can be removed when Windows no longer relies on these fields.
-
-                    // SAFETY: The FADT signature has been verified before calling `delete_table`.
-                    // The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-                    unsafe { fadt_table.as_mut::<AcpiFadt>() }.inner._firmware_ctrl = 0;
+                    fadt.inner._firmware_ctrl = 0;
                     fadt_table.update_checksum()?;
                 }
 
-                // Free the FACS memory.
-                // SAFETY: The FACS was allocated in ACPI Reclaim memory using page allocation. It has a well-defined size.
-                unsafe {
-                    self.memory_manager
-                        .get()
-                        .ok_or(AcpiError::ProviderNotInitialized)?
-                        .free_pages(physical_addr as usize, uefi_size_to_pages!(mem::size_of::<AcpiFacs>()))
-                        .map_err(|_| AcpiError::FreeFailed)
-                }?;
+                // Note: The FACS memory is freed automatically when the `Table` is dropped
+                // (via the `PageFree` allocator in `Box<[u8], PageFree>`).
+                // Do not manually call `free_pages` here, as that would cause a double free.
             }
             signature::DSDT => {
                 log::trace!("Deleting DSDT table and updating FADT");
                 // Clear out the DSDT pointer in the FADT.
-                if let Some(fadt_table) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
-                    // SAFETY: The FADT signature has been verified before calling `delete_table`.
-                    // The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
-                    unsafe { fadt_table.as_mut::<AcpiFadt>() }.set_x_dsdt(0);
+                if let Some(fadt_table) = self.acpi_tables_mut().get_mut(&Self::FADT_KEY)
+                    && let Some(fadt) = fadt_table.as_mut::<AcpiFadt>()
+                {
+                    fadt.set_x_dsdt(0);
                     fadt_table.update_checksum()?;
                 }
             }
@@ -746,7 +745,7 @@ where
     /// Calls the notify functions in `notify_list` upon installation of an ACPI table.
     pub(crate) fn notify_acpi_list(&self, table_key: TableKey) -> Result<(), AcpiError> {
         // Extract the guard as a variable so it lives until the end of this function.
-        let read_guard = self.acpi_tables.lock();
+        let read_guard = self.acpi_tables();
         let table_for_key = read_guard.get(&table_key);
 
         // Call each notify fn on the newly installed table.
@@ -776,12 +775,12 @@ where
     /// assuming we correctly exclude system tables (XSDT, RSDP, FACS, and DSDT), which by spec are not included in the list of installed tables.
     ///
     /// The only downside to the above approach is the non-constant access time for a particular index.
-    pub(crate) fn get_table_at_idx(&self, idx: usize) -> Result<(TableKey, AcpiTable), AcpiError> {
-        let guard = self.acpi_tables.lock();
+    pub(crate) fn get_table_at_idx(&self, idx: usize) -> Result<(TableKey, &Table), AcpiError> {
+        let guard = self.acpi_tables();
 
         // Find the idx-th non-system table.
         // Since FFI expects we return the same pointer to the same table in memory, a clone is required.
-        let found_table = guard.iter().nth(idx).map(|(&key, table)| (key, table.clone()));
+        let found_table = guard.iter().nth(idx).map(|(&key, table)| (key, table));
 
         let table_at_idx = found_table.ok_or(AcpiError::InvalidTableIndex)?;
         log::trace!(
@@ -798,7 +797,7 @@ where
 mod tests {
     extern crate std;
 
-    use crate::signature::MAX_INITIAL_ENTRIES;
+    use crate::{service::AcpiTable, signature::MAX_INITIAL_ENTRIES};
 
     use super::*;
     use mockall::predicate::always;
@@ -811,8 +810,13 @@ mod tests {
         boxed::Box,
         sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
     };
+    use zerocopy_derive::*;
+
+    // SAFETY: TODO
+    unsafe impl AcpiTable for MockAcpiTable {}
 
     #[repr(C, packed)]
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
     struct MockAcpiTable {
         _header: AcpiTableHeader,
         _data1: u8,
@@ -838,8 +842,7 @@ mod tests {
         create_dummy_rsdp(&provider);
 
         // SAFETY: The constructed table is a valid ACPI table.
-        let mock_table =
-            unsafe { AcpiTable::new(MockAcpiTable::new(), provider.memory_manager.get().unwrap()).unwrap() };
+        let mock_table = Table::new(MockAcpiTable::new(), provider.memory_manager.get().unwrap()).unwrap();
         let mock_table_addr = mock_table.as_ptr() as usize;
         let table_key = provider.install_standard_table(mock_table).unwrap();
 
@@ -891,13 +894,11 @@ mod tests {
         create_dummy_rsdp(&provider);
 
         let header1 = AcpiTableHeader { signature: 0x1, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-        // SAFETY: The constructed table is a valid ACPI table.
-        let table1 = unsafe { AcpiTable::new(header1, provider.memory_manager.get().unwrap()) };
+        let table1 = Table::new(header1, provider.memory_manager.get().unwrap()).unwrap();
         let header2 = AcpiTableHeader { signature: 0x2, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-        // SAFETY: The constructed table is a valid ACPI table.
-        let table2 = unsafe { AcpiTable::new(header2, provider.memory_manager.get().unwrap()) };
-        provider.install_standard_table(table1.unwrap()).expect("Install should succeed.");
-        provider.install_standard_table(table2.unwrap()).expect("Install should succeed.");
+        let table2 = Table::new(header2, provider.memory_manager.get().unwrap()).unwrap();
+        provider.install_standard_table(table1).expect("Install should succeed.");
+        provider.install_standard_table(table2).expect("Install should succeed.");
 
         // Both tables should be in the list and in order
         let result = provider.collect_tables();
@@ -921,8 +922,8 @@ mod tests {
         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
         // SAFETY: The constructed table is a valid ACPI table.
-        let fadt_table = unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() };
-        let key = provider.install_fadt(fadt_table.clone()).unwrap();
+        let fadt_table = Table::new(fadt_info.clone(), provider.memory_manager.get().unwrap()).unwrap();
+        let key = provider.install_fadt(fadt_table).unwrap();
 
         // The key should return the FADT.
         let retrieved_fadt = provider.get_acpi_table(key).unwrap();
@@ -932,7 +933,8 @@ mod tests {
         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), ACPI_HEADER_LEN as u32 + 8);
 
         // Any attempt to install the FADT again should fail.
-        assert_eq!(provider.install_fadt(fadt_table.clone()).unwrap_err(), AcpiError::FadtAlreadyInstalled);
+        let fadt_table = Table::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap();
+        assert_eq!(provider.install_fadt(fadt_table).unwrap_err(), AcpiError::FadtAlreadyInstalled);
     }
 
     #[test]
@@ -947,15 +949,13 @@ mod tests {
         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
 
         // Install the FADT first.
-        // SAFETY: The constructed table is a valid ACPI table.
-        let fadt_key = provider
-            .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-            .unwrap();
+
+        let fadt_key =
+            provider.install_fadt(Table::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap()).unwrap();
         // Install the FACS.
         // SAFETY: The constructed table is a valid FACS.
-        let res = unsafe {
-            provider.install_facs(AcpiTable::new(facs_info, provider.memory_manager.get().unwrap()).unwrap())
-        };
+        let res =
+            unsafe { provider.install_facs(Table::new(facs_info, provider.memory_manager.get().unwrap()).unwrap()) };
 
         // Make sure FACS was installed in the provider.
         assert!(res.is_ok());
@@ -964,8 +964,7 @@ mod tests {
         // Make sure FACS was installed into FADT.
         assert!({
             let table = provider.get_acpi_table(fadt_key).unwrap();
-            // SAFETY: We know the table is an FADT (constructed above).
-            unsafe { table.as_ref::<AcpiFadt>() }.x_firmware_ctrl() != 0
+            table.as_ref::<AcpiFadt>().unwrap().x_firmware_ctrl() != 0
         });
     }
 
@@ -986,14 +985,10 @@ mod tests {
         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
         // Install the FADT first.
-        // SAFETY: The constructed table is a valid ACPI table.
-        let fadt_key = provider
-            .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-            .unwrap();
+        let fadt_key =
+            provider.install_fadt(Table::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap()).unwrap();
         // Install the DSDT.
-        // SAFETY: The constructed table is a valid ACPI table.
-        let res = provider
-            .install_dsdt(unsafe { AcpiTable::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap() });
+        let res = provider.install_dsdt(Table::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap());
 
         // Make sure DSDT was installed in the provider.
         assert!(res.is_ok());
@@ -1002,8 +997,7 @@ mod tests {
         // Make sure DSDT was installed into FADT.
         assert!({
             let table = provider.get_acpi_table(fadt_key).unwrap();
-            // SAFETY: We know the table is an FADT (constructed above).
-            unsafe { table.as_ref::<AcpiFadt>() }.x_dsdt() != 0
+            table.as_ref::<AcpiFadt>().unwrap().x_dsdt() != 0
         });
     }
 
@@ -1143,14 +1137,11 @@ mod tests {
         // Install FADT and FACS
         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-        // SAFETY: `fadt_info` is a valid ACPI table.
-        let fadt_key = provider
-            .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-            .unwrap();
+        let fadt_key =
+            provider.install_fadt(Table::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap()).unwrap();
 
         let facs_info = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
-        // SAFETY: `facs_info` is a valid ACPI table.
-        let facs_table = unsafe { AcpiTable::new(facs_info, provider.memory_manager.get().unwrap()).unwrap() };
+        let facs_table = Table::new(facs_info, provider.memory_manager.get().unwrap()).unwrap();
         // SAFETY: `facs_table` is constructed to be a valid FACS.
         let facs_key = unsafe { provider.install_facs(facs_table).unwrap() };
 
@@ -1164,7 +1155,7 @@ mod tests {
         // FADT's x_firmware_ctrl should be zero
         let fadt = provider.get_acpi_table(fadt_key).unwrap();
         // SAFETY: We know that `fadt` is indeed an AcpiFadt (constructed by test).
-        assert_eq!(unsafe { fadt.as_ref::<AcpiFadt>() }.x_firmware_ctrl(), 0);
+        assert_eq!(fadt.as_ref::<AcpiFadt>().unwrap().x_firmware_ctrl(), 0);
     }
 
     #[test]
@@ -1178,10 +1169,8 @@ mod tests {
         // Install FADT and DSDT.
         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-        // SAFETY: `fadt_info` is a valid ACPI table.
-        let fadt_key = provider
-            .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-            .unwrap();
+        let fadt_key =
+            provider.install_fadt(Table::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap()).unwrap();
 
         let dsdt_info = AcpiDsdt {
             header: AcpiTableHeader {
@@ -1190,8 +1179,7 @@ mod tests {
                 ..Default::default()
             },
         };
-        // SAFETY: `dsdt_info` is a valid ACPI table.
-        let dsdt_table = unsafe { AcpiTable::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap() };
+        let dsdt_table = Table::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap();
         let dsdt_key = provider.install_dsdt(dsdt_table).unwrap();
 
         // Delete DSDT table.
@@ -1203,8 +1191,7 @@ mod tests {
 
         // FADT's x_dsdt should be zero
         let fadt = provider.get_acpi_table(fadt_key).unwrap();
-        // SAFETY: We know that `fadt` is indeed an AcpiFadt (constructed by test).
-        assert_eq!(unsafe { fadt.as_ref::<AcpiFadt>() }.x_dsdt(), 0);
+        assert_eq!(fadt.as_ref::<AcpiFadt>().unwrap().x_dsdt(), 0);
     }
 
     fn mock_rsdp(rsdp_signature: u64, include_xsdt: bool, xsdt_length: usize, xsdt_signature: u32) -> u64 {
@@ -1488,7 +1475,7 @@ mod tests {
         // Install a standard table and check if notify was called.
         let header = AcpiTableHeader { signature: 0x0101, length: ACPI_HEADER_LEN as u32, ..Default::default() };
         // SAFETY: `header` has a valid header format.
-        let table = unsafe { AcpiTable::new(header, provider.memory_manager.get().unwrap()).unwrap() };
+        let table = Table::new(header, provider.memory_manager.get().unwrap()).unwrap();
         let _ = provider.install_acpi_table(table).unwrap();
 
         // notify_acpi_list should have been called by install_standard_table.
@@ -1514,12 +1501,12 @@ mod tests {
         // Install two standard tables
         let header1 = AcpiTableHeader { signature: 0x10, length: ACPI_HEADER_LEN as u32, ..Default::default() };
         // SAFETY: `table1` has the correct format by construction.
-        let table1 = unsafe { AcpiTable::new(header1, provider.memory_manager.get().unwrap()).unwrap() };
+        let table1 = Table::new(header1, provider.memory_manager.get().unwrap()).unwrap();
         let key1 = provider.install_standard_table(table1).unwrap();
 
         let header2 = AcpiTableHeader { signature: 0x11, length: ACPI_HEADER_LEN as u32, ..Default::default() };
         // SAFETY: `table2` has the correct format by construction.
-        let table2 = unsafe { AcpiTable::new(header2, provider.memory_manager.get().unwrap()).unwrap() };
+        let table2 = Table::new(header2, provider.memory_manager.get().unwrap()).unwrap();
         let key2 = provider.install_standard_table(table2).unwrap();
 
         // Index 0 should return the first table
