@@ -138,19 +138,19 @@ impl AcpiTableManager {
 #[cfg_attr(any(test, feature = "mockall"), automock)]
 pub(crate) trait AcpiProvider {
     /// Installs an ACPI table and returns an associated key which can be used to get or uninstall the table later.
-    fn install_acpi_table(&self, acpi_table: Table) -> Result<TableKey, AcpiError>;
+    fn install_acpi_table(&self, acpi_table: Table<&'static dyn alloc::alloc::Allocator>) -> Result<TableKey, AcpiError>;
 
     /// Uninstalls an ACPI table using the same `table_key` returned at the time of installation.
     fn uninstall_acpi_table(&self, table_key: TableKey) -> Result<(), AcpiError>;
 
     /// Retrieves an ACPI table by its table key. This must be the same key returned at the time of installation.
-    fn get_acpi_table<'a>(&'a self, table_key: &TableKey) -> Option<&'a Table>;
+    fn get_acpi_table<'a>(&'a self, table_key: &TableKey) -> Option<&'a Table<&'static dyn alloc::alloc::Allocator>>;
 
     /// Registers or unregisters a function which will be called whenever a new ACPI table is installed.
     fn register_notify(&self, should_register: bool, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError>;
 
     /// Returns all currently installed tables in an iterable format.
-    fn collect_tables<'a>(&'a self) -> Vec<&'a Table>;
+    fn collect_tables<'a>(&'a self) -> Vec<&'a Table<&'static dyn alloc::alloc::Allocator>>;
 }
 
 #[cfg(test)]
@@ -168,23 +168,14 @@ mod tests {
 
     #[test]
     fn test_get_table_wrong_type() {
-        // Allow Send and Sync for AcpiTable in this test context.
-        #[allow(non_local_definitions)]
-        // SAFETY: This is only for testing purposes.
-        unsafe impl Send for Table {}
-        #[allow(non_local_definitions)]
-        // SAFETY: This is only for testing purposes.
-        unsafe impl Sync for Table {}
-
-        // SAFETY: The constructed table is a valid ACPI table.
         fn table() -> Option<&'static Table> {
-            Some(Box::leak(Box::new(Table::new(
-                AcpiFadt {
-                    header: AcpiTableHeader { length: mem::size_of::<AcpiFadt>() as u32, ..Default::default() },
-                    ..Default::default()
-                },
-            )
-            .unwrap())))
+            let allocator: &dyn alloc::alloc::Allocator = &alloc::alloc::Global;
+            let table = AcpiFadt {
+                header: AcpiTableHeader { length: mem::size_of::<AcpiFadt>() as u32, ..Default::default() },
+                ..Default::default()
+            };
+            let table = Table::new_in(table, allocator).unwrap();
+            Some(Box::leak(Box::new(table)))
         }
 
         let mut mock_acpi_provider = MockAcpiProvider::new();

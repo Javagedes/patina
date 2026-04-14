@@ -11,18 +11,9 @@
 //! SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    error::AcpiError, service::AcpiTable, signature::{self, ACPI_CHECKSUM_OFFSET}
+    error::AcpiError, service::AcpiTable, signature::ACPI_CHECKSUM_OFFSET,
 };
-use alloc::{rc::Rc, boxed::Box, vec::Vec, alloc::Allocator};
-use patina::{
-    base::SIZE_4GB,
-    component::service::{
-        Service,
-        memory::{AllocationOptions, MemoryManager, PageAllocationStrategy},
-    },
-    efi_types::EfiMemoryType,
-    uefi_size_to_pages,
-};
+use alloc::{rc::Rc, boxed::Box, alloc::Allocator};
 
 use core::{
     any::TypeId,
@@ -30,7 +21,6 @@ use core::{
     mem,
     ptr,
 };
-use std::collections::btree_map::Values;
 
 use zerocopy_derive::*;
 
@@ -183,6 +173,11 @@ pub struct AcpiFacs {
     pub(crate) version: u8,
     pub(crate) reserved: [u8; 31],
 }
+
+impl AcpiFacs {
+
+}
+
 /// Represents the DSDT for ACPI 2.0+.
 /// The DSDT is not present in the list of installed ACPI tables; instead, it is only accessible through the FADT's `x_dsdt` field.
 /// The DSDT has a standard header followed by variable-length AML bytecode.
@@ -476,7 +471,7 @@ impl<A: Allocator> Table<A> {
 
 #[cfg(test)]
 mod tests {
-    use patina::component::service::memory::StdMemoryManager;
+    use patina::{component::service::{Service, memory::{MemoryManager, StdMemoryManager}}, efi_types::EfiMemoryType};
 
     use super::*;
     use core::mem;
