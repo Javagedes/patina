@@ -26,17 +26,16 @@ use patina::{
     uefi_size_to_pages,
 };
 
+use crate as patina_acpi;
+
 use zerocopy_derive::*;
 
 use core::{any::TypeId, fmt::Debug, mem, ptr, slice};
 
-// SAFETY: TODO
-unsafe impl AcpiTable for AcpiFadt {}
-
 /// Represents the FADT for ACPI 2.0+.
 /// Equivalent to EFI_ACPI_3_0_FIXED_ACPI_DESCRIPTION_TABLE.
 #[repr(C, packed)]
-#[derive(Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
+#[derive(AcpiTable, Default, FromBytes, IntoBytes, KnownLayout, Immutable)]
 pub(crate) struct AcpiFadt {
     // Standard ACPI header.
     pub(crate) header: AcpiTableHeader,
@@ -158,8 +157,9 @@ pub struct GenericAddressStructure {
     address: u64,
 }
 
-// SAFETY: TODO
+// SAFETY: This struct starts with a 32-bit signature field and 32-bit length.
 unsafe impl AcpiTable for AcpiFacs {}
+
 /// Represents the FACS for ACPI 2.0+.
 /// Note that the FACS does not have a standard ACPI header.
 /// The FACS is not present in the list of installed ACPI tables; instead, it is only accessible through the FADT's `x_firmware_ctrl` field.
@@ -181,15 +181,12 @@ pub struct AcpiFacs {
     pub(crate) reserved: [u8; 31],
 }
 
-// SAFETY: TODO
-unsafe impl AcpiTable for AcpiDsdt {}
-
 /// Represents the DSDT for ACPI 2.0+.
 /// The DSDT is not present in the list of installed ACPI tables; instead, it is only accessible through the FADT's `x_dsdt` field.
 /// The DSDT has a standard header followed by variable-length AML bytecode.
 /// The `length` field of the header tells us the number of trailing bytes representing bytecode.
 #[repr(C, packed)]
-#[derive(Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(AcpiTable, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct AcpiDsdt {
     pub(crate) header: AcpiTableHeader,
 }
@@ -276,8 +273,9 @@ impl AcpiXsdtMetadata {
     }
 }
 
-// SAFETY: TODO
+// SAFETY: This struct is the AcpiTableHeader
 unsafe impl AcpiTable for AcpiTableHeader {}
+
 /// Represents a standard ACPI header.
 /// Equivalent to EFI_ACPI_DESCRIPTION_HEADER.
 #[repr(C, packed)]
@@ -521,11 +519,8 @@ mod tests {
     use super::*;
     use core::mem;
 
-    // SAFETY: TODO
-    unsafe impl AcpiTable for TestTable {}
-
     #[repr(C)]
-    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    #[derive(AcpiTable, FromBytes, IntoBytes, Immutable, KnownLayout)]
     struct TestTable {
         header: AcpiTableHeader,
         body: [u8; 3],

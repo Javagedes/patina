@@ -21,6 +21,7 @@ zerocopy-derive = { workspace = true }
 
 patina = { workspace = true, features = ["alloc"] }
 patina_test = { workspace = true }
+patina_macro = { workspace = true }
 
 [dev-dependencies]
 mockall = { workspace = true }

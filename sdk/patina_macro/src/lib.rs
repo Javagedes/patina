@@ -9,12 +9,17 @@
 
 #![feature(coverage_attribute)]
 
+mod acpi_table_macro;
 mod hob_macro;
 mod service_macro;
 mod smbios_record_macro;
 mod test_macro;
 mod validate_params_macro;
 
+#[proc_macro_derive(AcpiTable)]
+pub fn acpi_table(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    acpi_table_macro::acpi_table2(item.into()).into()
+}
 /// Derive Macro for implementing the `IntoService` trait for a type.
 ///
 /// This macro automatically implements the necessary traits for the provided type implementation to be used as a

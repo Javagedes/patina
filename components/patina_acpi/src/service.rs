@@ -40,6 +40,9 @@ pub unsafe trait AcpiTable: FromBytes + IntoBytes + Immutable + KnownLayout {
         <AcpiTableHeader as zerocopy::FromBytes>::ref_from_prefix(self.as_bytes()).expect("").0
     }
 }
+
+pub use patina_macro::AcpiTable;
+
 /// Represents an opaque reference to an installed ACPI table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TableKey(pub(crate) usize);
@@ -217,7 +220,7 @@ mod tests {
             memory_manager: Service::mock(Box::new(StdMemoryManager::new())),
         };
 
-        // SAFETY: TODO
+        // SAFETY: purposefully a bad table.
         unsafe impl AcpiTable for TestTable {}
 
         #[derive(Clone, Copy, Debug, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout)]

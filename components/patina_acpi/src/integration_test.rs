@@ -24,23 +24,18 @@ use crate::{
     signature::{self, ACPI_VERSIONS_GTE_2},
 };
 
+use crate as patina_acpi;
+
 use zerocopy_derive::*;
 
-// SAFETY: TODO
-unsafe impl AcpiTable for MockSmallTable {}
-
 #[repr(C)]
-#[derive(Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(AcpiTable, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct MockSmallTable {
     _header: AcpiTableHeader,
 }
 
-// SAFETY: TODO
-unsafe impl AcpiTable for MockLargeTable {}
-
-// SAFETY: TODO
 #[repr(C)]
-#[derive(Clone, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
+#[derive(AcpiTable, Clone, Default, FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct MockLargeTable {
     header: AcpiTableHeader,
     data: [u8; 32],

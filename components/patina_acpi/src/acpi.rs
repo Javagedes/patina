@@ -812,11 +812,10 @@ mod tests {
     };
     use zerocopy_derive::*;
 
-    // SAFETY: TODO
-    unsafe impl AcpiTable for MockAcpiTable {}
+    use crate as patina_acpi;
 
     #[repr(C, packed)]
-    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    #[derive(AcpiTable, FromBytes, IntoBytes, Immutable, KnownLayout)]
     struct MockAcpiTable {
         _header: AcpiTableHeader,
         _data1: u8,
