@@ -57,3 +57,4 @@ mod acpi_protocol;
 mod acpi_table;
 mod integration_test;
 mod signature;
+mod table;

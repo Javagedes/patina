@@ -10,9 +10,9 @@ use crate::{
     acpi_table::{AcpiTableHeader, AcpiXsdtMetadata},
     alloc::boxed::Box,
     hob::AcpiMemoryHob,
-    service::{AcpiProvider, AcpiTableManager},
 };
 use alloc::vec::Vec;
+use zerocopy::IntoBytes;
 
 use core::mem;
 
@@ -105,22 +105,20 @@ impl AcpiComponent {
         let xsdt_addr = xsdt_allocated_bytes.as_ptr() as u64;
 
         // Create XSDT header.
-        let xsdt_info = AcpiXsdt {
-            header: AcpiTableHeader {
-                signature: signature::XSDT,
-                length: ACPI_HEADER_LEN as u32, // XSDT starts off with no entries
-                revision: ACPI_XSDT_REVISION,
-                checksum: 0,
-                oem_id: self.oem_id,
-                oem_table_id: self.oem_table_id,
-                oem_revision: self.oem_revision,
-                creator_id: self.creator_id,
-                creator_revision: self.creator_revision,
-            },
+        let xsdt_header = AcpiTableHeader {
+            signature: signature::XSDT,
+            length: ACPI_HEADER_LEN as u32, // XSDT starts off with no entries
+            revision: ACPI_XSDT_REVISION,
+            checksum: 0,
+            oem_id: self.oem_id,
+            oem_table_id: self.oem_table_id,
+            oem_revision: self.oem_revision,
+            creator_id: self.creator_id,
+            creator_revision: self.creator_revision,
         };
 
         // Write the XSDT header to the allocated memory.
-        xsdt_allocated_bytes.extend(xsdt_info.header.hdr_to_bytes());
+        xsdt_allocated_bytes.extend_from_slice(xsdt_header.as_bytes());
         // Fill in trailing space with zeros so it is accessible (Vec length != Vec capacity).
         xsdt_allocated_bytes.extend(core::iter::repeat_n(0u8, xsdt_size - ACPI_HEADER_LEN));
 
@@ -182,14 +180,6 @@ impl AcpiComponent {
         }
 
         storage.add_service(&STANDARD_ACPI_PROVIDER);
-
-        // Set up the generic wrapper service for ACPI table management.
-        // This allows installation of generic ACPI tables; i.e. install_acpi_table<T>.
-        let acpi_provider = storage.get_service::<dyn AcpiProvider>().ok_or(EfiError::NotStarted)?;
-        let acpi_service = AcpiTableManager { provider_service: acpi_provider, memory_manager };
-        // Register the ACPI table manager service.
-        // Consumers of ACPI table management should use this service rather than the provider directly.
-        storage.add_service(acpi_service);
 
         log::trace!("ACPI Provider initialized.");
 

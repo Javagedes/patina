@@ -77,6 +77,10 @@ pub enum AcpiError {
     FacsAddressExceeds32BitLimit,
     /// Checksum calculation failed.
     ChecksumFailed,
+
+    // NEW ERRORS FOR ME
+    /// The table length is invalid
+    InvalidLength,
 }
 
 impl From<AcpiError> for efi::Status {
@@ -111,7 +115,15 @@ impl From<AcpiError> for efi::Status {
             AcpiError::FacsAddressExceeds32BitLimit => efi::Status::UNSUPPORTED,
             AcpiError::XsdtEntryNotFound => efi::Status::NOT_FOUND,
             AcpiError::ChecksumFailed => efi::Status::COMPROMISED_DATA,
+            AcpiError::InvalidLength => efi::Status::INVALID_PARAMETER, // THIS RIGHT?
         }
+    }
+}
+
+// Due to the unaligned requirement for ACPI tables, the only fallable operation is an invalid length (CastError::Size)
+impl<Src, Dst> From<zerocopy::error::CastError<Src, Dst>> for AcpiError {
+    fn from(_err: zerocopy::error::CastError<Src, Dst>) -> Self {
+        AcpiError::InvalidLength
     }
 }
 

@@ -9,17 +9,18 @@
 //!
 
 use crate::{
-    acpi_table::{AcpiTable, AcpiTableHeader},
+    acpi_table::AcpiTableHeader,
     signature::{self, ACPI_VERSIONS_GTE_2},
 };
 
 use core::{ffi::c_void, mem};
 use patina::uefi_protocol::ProtocolInterface;
 use r_efi::efi;
+use zerocopy::FromBytes;
 
 use crate::{
     acpi::STANDARD_ACPI_PROVIDER,
-    service::{AcpiNotifyFn, AcpiProvider, TableKey},
+    service::{Acpi, AcpiNotifyFn, TableKey},
 };
 
 /// Corresponds to the ACPI Table Protocol as defined in UEFI spec.
@@ -78,56 +79,43 @@ impl AcpiTableProtocol {
             return efi::Status::INVALID_PARAMETER;
         }
 
-        // The size of the allocated table buffer must be large enough to store the whole table.
-        // SAFETY: `acpi_table_buffer` is checked non-null and large enough to read an AcpiTableHeader.
-        let table_header = unsafe { (*(acpi_table_buffer as *const AcpiTableHeader)).clone() };
-        let tbl_length = table_header.length as usize;
-        if tbl_length != acpi_table_buffer_size {
+        // SAFETY: The table address has been checked to be non-null and the consumer provided the valid size of readable memory for the table
+        let table_bytes =
+            unsafe { core::slice::from_raw_parts(acpi_table_buffer as *const u8, acpi_table_buffer_size) };
+
+        let Ok((header, _)) = AcpiTableHeader::ref_from_prefix(table_bytes).map_err(|_| efi::Status::INVALID_PARAMETER)
+        else {
+            return efi::Status::INVALID_PARAMETER;
+        };
+
+        let length = header.length as usize;
+        let signature = header.signature;
+
+        if length != acpi_table_buffer_size || length < signature::acpi_table_min_size(signature) {
             return efi::Status::INVALID_PARAMETER;
         }
 
-        // The size of the allocated table buffer must be large enough to store the table, for known table types.
-        let signature = table_header.signature;
-        let min_size = signature::acpi_table_min_size(signature);
-        if tbl_length < min_size {
-            return efi::Status::INVALID_PARAMETER;
-        }
-
-        if let Some(global_mm) = STANDARD_ACPI_PROVIDER.memory_manager.get() {
-            // SAFETY: `acpi_table_buffer` has been validated as non-null and of sufficient size above.
-            let acpi_table =
-                unsafe { AcpiTable::new_from_ptr(acpi_table_buffer as *const AcpiTableHeader, None, global_mm) };
-
-            if let Ok(table) = acpi_table {
-                let signature = table.signature();
-                let install_result = STANDARD_ACPI_PROVIDER.install_acpi_table(table);
-
-                match install_result {
-                    Ok(key) => {
-                        // SAFETY: The caller must ensure the buffer passed in for the key is appropriately sized and non-null.
-                        unsafe { *table_key = key.0 };
-                        log::trace!(
-                            "ACPI protocol: Successfully installed table with signature: 0x{:08X}, key: {}",
-                            signature,
-                            key.0
-                        );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "ACPI protocol: Install failed with error {:?} for table with signature: 0x{:08X}",
-                            e,
-                            signature,
-                        );
-                        return e.into();
-                    }
-                }
-                efi::Status::SUCCESS
-            } else {
-                efi::Status::OUT_OF_RESOURCES
+        match STANDARD_ACPI_PROVIDER.install_table(table_bytes) {
+            Ok(key) => {
+                // SAFETY: The caller must ensure the buffer passed in for the key is appropriately sized and non-null.
+                unsafe { *table_key = key.0 };
+                log::trace!(
+                    "ACPI protocol: Successfully installed table with signature: 0x{:08X}, key: {}",
+                    signature,
+                    key.0
+                );
             }
-        } else {
-            efi::Status::NOT_STARTED
+            Err(e) => {
+                log::error!(
+                    "ACPI protocol: Install failed with error {:?} for table with signature: 0x{:08X}",
+                    e,
+                    signature,
+                );
+                return e.into();
+            }
         }
+
+        efi::Status::SUCCESS
     }
 
     /// Removes an ACPI table from the XSDT.
@@ -142,7 +130,7 @@ impl AcpiTableProtocol {
     /// Returns [`INVALID_PARAMETER`](r_efi::efi::Status::INVALID_PARAMETER) if the table key does not correspond to an installed table.
     /// Returns [`OUT_OF_RESOURCES`](r_efi::efi::Status::OUT_OF_RESOURCES) if memory operations fail.
     extern "efiapi" fn uninstall_acpi_table_ext(_protocol: *const AcpiTableProtocol, table_key: usize) -> efi::Status {
-        match STANDARD_ACPI_PROVIDER.uninstall_acpi_table(TableKey(table_key)) {
+        match STANDARD_ACPI_PROVIDER.uninstall_table(TableKey(table_key)) {
             Ok(_) => {
                 log::trace!("ACPI protocol: Successfully uninstalled table with key: {}", table_key);
                 efi::Status::SUCCESS
@@ -211,12 +199,11 @@ impl AcpiGetProtocol {
                 unsafe { *table_key = key_at_idx.0 };
 
                 // SAFETY: We check that `table` is non-null above.
-                unsafe { *table = table_at_idx.as_mut_ptr() };
+                unsafe { *table = table_at_idx };
                 log::trace!(
-                    "ACPI protocol: Successfully retrieved table at index {} with key: {} and signature: 0x{:08X}",
+                    "ACPI protocol: Successfully retrieved table at index {} with key: {}",
                     index,
                     key_at_idx.0,
-                    table_at_idx.signature()
                 );
                 efi::Status::SUCCESS
             }
@@ -248,7 +235,15 @@ impl AcpiGetProtocol {
             }
         };
 
-        match STANDARD_ACPI_PROVIDER.register_notify(register, rust_fn) {
+        let result = match register {
+            true => {
+                STANDARD_ACPI_PROVIDER.register_notify(rust_fn);
+                Ok(())
+            }
+            false => STANDARD_ACPI_PROVIDER.unregister_notify(rust_fn),
+        };
+
+        match result {
             Ok(_) => efi::Status::SUCCESS,
             Err(err) => err.into(),
         }
