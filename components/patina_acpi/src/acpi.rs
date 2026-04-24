@@ -18,6 +18,7 @@ use core::{
     slice,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use std::io::Read;
 use zerocopy::{FromBytes, IntoBytes};
 
 use patina::{
@@ -27,7 +28,7 @@ use patina::{
         hob::Hob,
         service::{
             IntoService, Service,
-            memory::{MemoryManager, PageFree},
+            memory::{AllocationOptions, MemoryManager, PageAllocationStrategy, PageFree},
         },
     },
     efi_types::EfiMemoryType,
@@ -61,7 +62,7 @@ pub(crate) struct StandardAcpiProvider<B: BootServices + 'static> {
     /// Provides boot services.
     pub(crate) boot_services: OnceCell<B>,
     /// Provides memory services.
-    pub(crate) memory_manager: OnceCell<Service<dyn MemoryManager>>,
+    pub(crate) memory_manager: Service<dyn MemoryManager>,
     /// Stores data about the XSDT and its entries.
     xsdt_metadata: TplMutex<Option<AcpiXsdtMetadata>, B>,
     /// Stores data about the RSDP.
@@ -95,7 +96,7 @@ where
             next_table_key: AtomicUsize::new(Self::FIRST_FREE_KEY),
             notify_list: TplMutex::new_uninit(Tpl::NOTIFY, vec![]),
             boot_services: OnceCell::new(),
-            memory_manager: OnceCell::new(),
+            memory_manager: Service::new_uninit(),
             xsdt_metadata: TplMutex::new_uninit(Tpl::NOTIFY, None),
             rsdp: TplMutex::new_uninit(Tpl::NOTIFY, None),
         }
@@ -123,26 +124,8 @@ where
             return Err(AcpiError::BootServicesAlreadyInitialized);
         }
 
-        if self.memory_manager.set(memory_manager).is_err() {
-            return Err(AcpiError::MemoryManagerAlreadyInitialized);
-        }
+        self.memory_manager.replace(&memory_manager);
         Ok(())
-    }
-
-    pub fn install_table(&self, table: &[u8]) -> Result<TableKey, AcpiError> {
-        let header = Self::header(table)?;
-        let table = self.allocate_table(table)?;
-
-        let table_key = match header.signature {
-            signature::FACS => self.install_facs(table)?,
-            signature::FADT => self.install_fadt(table)?,
-            signature::DSDT => self.install_dsdt(table)?,
-            _ => self.install_generic_table(table)?,
-        };
-
-        self.publish_tables()?;
-        self.notify_acpi_list(table_key)?;
-        Ok(table_key)
     }
 
     fn header(bytes: &[u8]) -> Result<&AcpiTableHeader, AcpiError> {
@@ -150,11 +133,38 @@ where
     }
 
     fn allocate_table(&self, table: &[u8]) -> Result<Box<[u8], PageFree>, AcpiError> {
-        todo!()
+        let header = Self::header(table)?;
+
+        // FACS and UEFI tables must always be located in NVS (by spec).
+        let memory_type = match header.signature() {
+            signature::FACS | signature::UEFI => EfiMemoryType::ACPIMemoryNVS,
+            _ => EfiMemoryType::ACPIReclaimMemory,
+        };
+
+        // The current Windows implementation uses the legacy 32-bit FACS pointer in the FADT.
+        // As such, the FACS must be allocated in the lower 32-bit address space.
+        // This workaround can be removed when Windows no longer relies on this field.
+        let allocation_strategy = if header.signature() == signature::FACS {
+            PageAllocationStrategy::MaxAddress(SIZE_4GB - 1)
+        } else {
+            PageAllocationStrategy::Any
+        };
+
+        let pa = self.memory_manager.allocate_zero_pages(
+            uefi_size_to_pages!(table.len()),
+            AllocationOptions::new().with_memory_type(memory_type).with_strategy(allocation_strategy)
+        ).map_err(|_| AcpiError::AllocationFailed)?;
+
+        let mut boxed = pa.into_boxed_slice::<u8>();
+        boxed[..table.len()].copy_from_slice(table);
+        Ok(boxed)
     }
 
     fn checksum(table: &mut [u8]) {
-        todo!()
+        table[ACPI_CHECKSUM_OFFSET] = 0;
+
+        let sum: u8 = table.iter().fold(0u8, |acc, &b| acc.wrapping_add(b));
+        table[ACPI_CHECKSUM_OFFSET] = (0u8).wrapping_sub(sum);
     }
 
     /// Sets up tracking for the RSDP internally.
@@ -204,7 +214,7 @@ where
         // SAFETY: The XSDT address has been checked to be non-null; The table is valid to be read for at least the size of an `AcpiTableHeader`.
         let header_bytes =
             unsafe { core::slice::from_raw_parts(rsdp.xsdt_address as *const u8, mem::size_of::<AcpiTableHeader>()) };
-        let header = AcpiTableHeader::ref_from_bytes(header_bytes).map_err(|_| AcpiError::InvalidLength)?;
+        let header = Self::header(header_bytes)?;
 
         if header.signature != signature::XSDT {
             return Err(AcpiError::InvalidSignature);
@@ -212,7 +222,7 @@ where
 
         // SAFETY: The XSDT address has been checked to be non-null; The table is valid to be read for at least the table's specified size.
         let xsdt_bytes = unsafe { core::slice::from_raw_parts(rsdp.xsdt_address as *const u8, header.length as usize) };
-        let xsdt = AcpiXsdt::ref_from_bytes(xsdt_bytes).map_err(|_| AcpiError::InvalidLength)?;
+        let xsdt = AcpiXsdt::ref_from_bytes(xsdt_bytes)?;
 
         Ok(xsdt)
     }
@@ -224,7 +234,7 @@ where
             let header_bytes = unsafe {
                 core::slice::from_raw_parts(fadt.x_firmware_ctrl() as *const u8, mem::size_of::<AcpiTableHeader>())
             };
-            let header = AcpiTableHeader::ref_from_bytes(header_bytes).map_err(|_| AcpiError::InvalidLength)?;
+            let header = Self::header(header_bytes)?;
 
             if header.signature != signature::FACS {
                 return Err(AcpiError::InvalidSignature);
@@ -241,7 +251,7 @@ where
             // SAFETY: The DSDT address has been checked to be non-null; all ACPI tables are valid to be read for at least the size of an `AcpiTableHeader`.
             let header_bytes =
                 unsafe { core::slice::from_raw_parts(fadt.x_dsdt() as *const u8, mem::size_of::<AcpiTableHeader>()) };
-            let header = AcpiTableHeader::ref_from_bytes(header_bytes).map_err(|_| AcpiError::InvalidLength)?;
+            let header = Self::header(header_bytes)?;
 
             if header.signature != signature::DSDT {
                 return Err(AcpiError::InvalidSignature);
@@ -266,7 +276,7 @@ where
         // SAFETY: The RSDP address has been checked to be non-null; RSDP is statically sized and valid to read for at least the size of an `AcpiRsdp`.
         let rsdp_bytes =
             unsafe { core::slice::from_raw_parts(acpi_hob.rsdp_address as *const u8, mem::size_of::<AcpiRsdp>()) };
-        let rsdp = AcpiRsdp::ref_from_bytes(rsdp_bytes).map_err(|_| AcpiError::InvalidLength)?;
+        let rsdp = AcpiRsdp::ref_from_bytes(rsdp_bytes)?;
 
         if rsdp.signature != signature::ACPI_RSDP_TABLE {
             return Err(AcpiError::InvalidSignature);
@@ -284,16 +294,17 @@ where
             // SAFETY: The table pointer has been checked to be non-null; all ACPI tables are valid to be read for at least the size of an `AcpiTableHeader`.
             let header_bytes =
                 unsafe { core::slice::from_raw_parts(entry_addr as *const u8, mem::size_of::<AcpiTableHeader>()) };
-            let header = AcpiTableHeader::ref_from_bytes(header_bytes).map_err(|_| AcpiError::InvalidLength)?;
+            let header = Self::header(header_bytes)?;
 
             // SAFETY: The table pointer has been checked to be non-null; The table is valid to be read for at least the table's specified size.
             let table_bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, header.length as usize) };
 
-            self.install_table(table_bytes)?;
+            // SAFETY: The table pointer has been checked to be non-null; The table is valid to be read for at least the table's specified size.
+            unsafe { self.install_table(table_bytes)? };
 
             // If this table points to other system tables, install them too.
             if header.signature == signature::FADT {
-                let fadt = AcpiFadt::ref_from_bytes(table_bytes).map_err(|_| AcpiError::InvalidLength)?;
+                let fadt = AcpiFadt::ref_from_bytes(table_bytes)?;
                 self.install_tables_from_fadt(fadt)?;
             }
         }
@@ -311,7 +322,7 @@ where
 
         let fadt_ptr = fadt_bytes.as_ptr() as u64;
 
-        let fadt = AcpiFadt::mut_from_bytes(&mut fadt_bytes).map_err(|_| AcpiError::InvalidLength)?;
+        let fadt = AcpiFadt::mut_from_bytes(&mut fadt_bytes)?;
 
         // If the FACS is already installed, update the FADT's x_firmware_ctrl field.
         // If not, it will be updated when the FACS is installed.
@@ -410,7 +421,7 @@ where
         log::trace!(
             "Successfully installed standard table with key and signature: {} 0x{:08X}",
             curr_key.0,
-            u32::ref_from_prefix(&table_bytes).map_err(|_| AcpiError::InvalidLength)?.0,
+            u32::ref_from_prefix(&table_bytes)?.0,
         );
 
         // Add the table to the internal hashmap of installed tables after all other operations succeed.
@@ -468,8 +479,6 @@ where
             // The XSDT is always allocated in reclaim memory.
             let allocator = self
                 .memory_manager
-                .get()
-                .ok_or(AcpiError::ProviderNotInitialized)?
                 .get_allocator(EfiMemoryType::ACPIReclaimMemory)
                 .map_err(|_e| AcpiError::AllocationFailed)?;
             // Allocate new buffer with increased capacity.
@@ -661,7 +670,7 @@ where
         let read_guard = self.acpi_tables.lock();
         let table = read_guard.get(&table_key).ok_or(AcpiError::TableNotifyFailed)?;
 
-        let header = AcpiTableHeader::ref_from_prefix(table).map_err(|_| AcpiError::TableNotifyFailed)?.0;
+        let header = Self::header(table).map_err(|_| AcpiError::TableNotifyFailed)?;
 
         let callbacks = self.notify_list.lock().iter().copied().collect::<Vec<AcpiNotifyFn>>();
 
@@ -698,31 +707,62 @@ where
         );
         Ok((table.0, table.1.as_ptr() as *mut AcpiTableHeader))
     }
+
+    fn register_notify(&self, should_register: bool, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError> {
+        if should_register {
+            self.notify_list.lock().push(notify_fn);
+        } else {
+            let found_pos = self.notify_list.lock().iter().position(|x| core::ptr::fn_addr_eq(*x, notify_fn));
+            if let Some(pos) = found_pos {
+                self.notify_list.lock().remove(pos);
+            } else {
+                return Err(AcpiError::InvalidNotifyUnregister);
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl<B: BootServices> Acpi for StandardAcpiProvider<B> {
     unsafe fn install_table(&self, table: &[u8]) -> Result<TableKey, AcpiError> {
-        self.install_table(table)
+        let header = Self::header(table)?;
+        let table = self.allocate_table(table)?;
+
+        let table_key = match header.signature {
+            signature::FACS => self.install_facs(table)?,
+            signature::FADT => self.install_fadt(table)?,
+            signature::DSDT => self.install_dsdt(table)?,
+            _ => self.install_generic_table(table)?,
+        };
+
+        self.publish_tables()?;
+        self.notify_acpi_list(table_key)?;
+        Ok(table_key)
     }
 
-    fn get_table(&self, key: &TableKey) -> Result<Table<AcpiTableHeader>, AcpiError> {
-        todo!()
+    fn uninstall_table(&self, key: TableKey) -> Result<Vec<u8>, AcpiError> {
+        let table = self.get_table(&key)?;
+        self.remove_table_from_list(key)?;
+        self.publish_tables()?;
+        log::trace!("Successfully uninstalled ACPI table with key: {}", key.0);
+        Ok(table)
     }
 
-    fn uninstall_table(&self, key: TableKey) -> Result<Table<AcpiTableHeader>, AcpiError> {
-        todo!()
+    fn get_table(&self, key: &TableKey) -> Result<Vec<u8>, AcpiError> {
+       self.acpi_tables.lock().get(key).map(|table| table.as_bytes().to_vec()).ok_or(AcpiError::NotFound)
     }
 
-    fn register_notify(&self, notify_fn: AcpiNotifyFn) {
-        todo!()
+    fn register_notify(&self, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError> {
+        self.register_notify(true, notify_fn)
     }
 
     fn unregister_notify(&self, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError> {
-        todo!()
+        self.register_notify(false, notify_fn)
     }
 
-    fn collect_tables(&self) -> Vec<Table<AcpiTableHeader>> {
-        todo!()
+    fn collect_tables(&self) -> Vec<Vec<u8>> {
+        self.acpi_tables.lock().values().map(|table| table.as_bytes().to_vec()).collect()
     }
 }
 

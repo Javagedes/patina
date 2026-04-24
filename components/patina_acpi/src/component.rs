@@ -93,8 +93,6 @@ impl AcpiComponent {
         // The XSDT is always allocated in reclaim memory.
         let allocator = STANDARD_ACPI_PROVIDER
             .memory_manager
-            .get()
-            .ok_or(EfiError::NotStarted)?
             .get_allocator(EfiMemoryType::ACPIReclaimMemory)
             .map_err(|_e| EfiError::OutOfResources)?;
 
@@ -148,8 +146,6 @@ impl AcpiComponent {
         let rsdp_size = mem::size_of::<AcpiRsdp>();
         let rsdp_allocation = STANDARD_ACPI_PROVIDER
             .memory_manager
-            .get()
-            .ok_or(EfiError::NotStarted)?
             .allocate_pages(
                 uefi_size_to_pages!(rsdp_size),
                 patina::component::service::memory::AllocationOptions::new()

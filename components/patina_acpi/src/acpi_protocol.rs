@@ -95,7 +95,8 @@ impl AcpiTableProtocol {
             return efi::Status::INVALID_PARAMETER;
         }
 
-        match STANDARD_ACPI_PROVIDER.install_table(table_bytes) {
+        // SAFETY: The table pointer has been checked to be non-null; The table is valid to be read for at least the table's specified size.
+        match unsafe { STANDARD_ACPI_PROVIDER.install_table(table_bytes) } {
             Ok(key) => {
                 // SAFETY: The caller must ensure the buffer passed in for the key is appropriately sized and non-null.
                 unsafe { *table_key = key.0 };

@@ -50,7 +50,7 @@ pub trait Acpi {
     ///
     /// Returns [AcpiError::NotFound] if the table is not found.
     /// Returns [AcpiError::InvalidLength] if the table is not long enough for an [AcpiTableHeader].
-    fn get_table(&self, key: &TableKey) -> Result<Table<AcpiTableHeader>, AcpiError>;
+    fn get_table(&self, key: &TableKey) -> Result<Vec<u8>, AcpiError>;
 
     /// Removes a table and returns it to the caller
     ///
@@ -58,10 +58,10 @@ pub trait Acpi {
     ///
     /// Returns [AcpiError::NotFound] if the table is not found.
     /// Returns [AcpiError::InvalidLength] if the table is not long enough for an [AcpiTableHeader].
-    fn uninstall_table(&self, key: TableKey) -> Result<Table<AcpiTableHeader>, AcpiError>;
+    fn uninstall_table(&self, key: TableKey) -> Result<Vec<u8>, AcpiError>;
 
     /// Registers a function that will be called whenever a new ACPI table is installed.
-    fn register_notify(&self, notify_fn: AcpiNotifyFn);
+    fn register_notify(&self, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError>;
 
     /// Unregisters a function that will be called whenever a new ACPI table is installed.
     ///
@@ -71,7 +71,7 @@ pub trait Acpi {
     fn unregister_notify(&self, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError>;
 
     /// Returns a copy of all registered ACPI tables.
-    fn collect_tables(&self) -> Vec<Table<AcpiTableHeader>>;
+    fn collect_tables(&self) -> Vec<Vec<u8>>;
 }
 
 /// An extension trait to provide generic methods for convenience

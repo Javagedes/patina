@@ -22,6 +22,12 @@ pub struct Table<T: AcpiTable + ?Sized> {
     pub(crate) _marker: core::marker::PhantomData<T>,
 }
 
+impl <T: AcpiTable + ?Sized> Table<T> {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 /// A trait representing an element in a dynamically sized ACPI table.
 pub trait Element: IntoBytes + FromBytes + Immutable + KnownLayout + Unaligned {
     /// TODO
