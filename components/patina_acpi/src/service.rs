@@ -8,6 +8,8 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
+use core::ops::Deref;
+
 use alloc::vec::Vec;
 use patina::component::service::Service;
 use r_efi::efi;
@@ -109,14 +111,16 @@ pub trait AcpiExt {
 /// service itself.
 impl AcpiExt for Service<dyn Acpi> {
     fn install_table<T: AcpiTable>(&self, table: &T) -> Result<TableKey, AcpiError> {
-        todo!()
+        // SAFETY: The safety requirements for `AcpiTable` ensure that the table starts with a valid ACPI header.
+        unsafe { self.deref().install_table(table.as_bytes()) }
     }
 
     fn get_table<T: AcpiTable>(&self, key: &TableKey) -> Result<Table<T>, AcpiError> {
-        todo!()
+        let bytes = self.deref().get_table(key)?;
+        Table::<T>::try_from(bytes)
     }
 
-    fn mutate_table<F, T>(&self, key: &TableKey, f: F) -> Result<(), AcpiError>
+    fn mutate_table<F, T>(&self, _key: &TableKey, _f: F) -> Result<(), AcpiError>
     where
         T: AcpiTable,
         F: FnOnce(&mut Table<T>) -> Result<(), AcpiError>,
@@ -124,50 +128,3 @@ impl AcpiExt for Service<dyn Acpi> {
         todo!()
     }
 }
-// #[cfg(test)]
-// #[coverage(off)]
-// mod tests {
-//     use alloc::boxed::Box;
-//     use core::mem;
-//     use patina::component::service::memory::StdMemoryManager;
-
-//     use crate::acpi_table::AcpiFadt;
-
-//     use super::*;
-
-//     #[test]
-//     fn test_get_table_wrong_type() {
-//         // Allow Send and Sync for AcpiTable in this test context.
-//         #[allow(non_local_definitions)]
-//         // SAFETY: This is only for testing purposes.
-//         unsafe impl Send for AcpiTable {}
-//         #[allow(non_local_definitions)]
-//         // SAFETY: This is only for testing purposes.
-//         unsafe impl Sync for AcpiTable {}
-
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let table = unsafe {
-//             AcpiTable::new(
-//                 AcpiFadt {
-//                     header: AcpiTableHeader { length: mem::size_of::<AcpiFadt>() as u32, ..Default::default() },
-//                     ..Default::default()
-//                 },
-//                 &Service::mock(Box::new(StdMemoryManager::new())),
-//             )
-//             .unwrap()
-//         };
-
-//         let mut mock_acpi_provider = MockAcpiProvider::new();
-//         mock_acpi_provider.expect_get_acpi_table().returning(move |_table_key| Ok(table.clone()));
-//         let provider = AcpiTableManager {
-//             provider_service: Service::mock(Box::new(mock_acpi_provider)),
-//             memory_manager: Service::mock(Box::new(StdMemoryManager::new())),
-//         };
-
-//         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-//         struct TestTable;
-
-//         let result = provider.get_acpi_table::<TestTable>(TableKey(0));
-//         assert_eq!(result, Err(AcpiError::InvalidTableType));
-//     }
-// }

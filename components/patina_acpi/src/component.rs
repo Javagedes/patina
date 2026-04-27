@@ -34,7 +34,7 @@ use patina::{
 use crate::{
     acpi::STANDARD_ACPI_PROVIDER,
     acpi_protocol::{AcpiGetProtocol, AcpiTableProtocol},
-    acpi_table::{AcpiRsdp, AcpiXsdt},
+    acpi_table::AcpiRsdp,
     signature::{
         self, ACPI_HEADER_LEN, ACPI_RESERVED_BYTE, ACPI_RSDP_REVISION, ACPI_XSDT_REVISION, MAX_INITIAL_ENTRIES,
     },

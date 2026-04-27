@@ -9,16 +9,14 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 
-use alloc::{boxed::Box, collections::btree_map::BTreeMap};
+use alloc::{boxed::Box, collections::btree_map::BTreeMap, {vec, vec::Vec}};
 use core::{
-    any::TypeId,
     cell::OnceCell,
     ffi::c_void,
     mem::{self},
     slice,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use std::io::Read;
 use zerocopy::{FromBytes, IntoBytes};
 
 use patina::{
@@ -37,13 +35,11 @@ use patina::{
 };
 
 use crate::{
-    acpi_table::{AcpiDsdt, AcpiFacs, AcpiFadt, AcpiRsdp, AcpiTableHeader, AcpiXsdt, AcpiXsdtMetadata},
-    alloc::vec::{self, Vec},
+    acpi_table::{AcpiFadt, AcpiRsdp, AcpiTableHeader, AcpiXsdt, AcpiXsdtMetadata},
     error::AcpiError,
     hob::AcpiMemoryHob,
     service::{Acpi, AcpiNotifyFn, TableKey},
     signature::{self, ACPI_CHECKSUM_OFFSET, ACPI_HEADER_LEN, ACPI_VERSIONS_GTE_2, ACPI_XSDT_ENTRY_SIZE},
-    table::Table,
 };
 
 pub static STANDARD_ACPI_PROVIDER: StandardAcpiProvider<StandardBootServices> = StandardAcpiProvider::new_uninit();
@@ -150,10 +146,13 @@ where
             PageAllocationStrategy::Any
         };
 
-        let pa = self.memory_manager.allocate_zero_pages(
-            uefi_size_to_pages!(table.len()),
-            AllocationOptions::new().with_memory_type(memory_type).with_strategy(allocation_strategy)
-        ).map_err(|_| AcpiError::AllocationFailed)?;
+        let pa = self
+            .memory_manager
+            .allocate_zero_pages(
+                uefi_size_to_pages!(table.len()),
+                AllocationOptions::new().with_memory_type(memory_type).with_strategy(allocation_strategy),
+            )
+            .map_err(|_| AcpiError::AllocationFailed)?;
 
         let mut boxed = pa.into_boxed_slice::<u8>();
         boxed[..table.len()].copy_from_slice(table);
@@ -182,9 +181,8 @@ where
     /// Installs the FACS.
     pub(crate) fn install_facs(&self, facs_info: Box<[u8], PageFree>) -> Result<TableKey, AcpiError> {
         // Update the FADT's address pointer to the FACS.
-        if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY)
-            && let Ok(fadt_table) = AcpiFadt::mut_from_bytes(fadt_bytes)
-        {
+        if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+            let fadt_table = AcpiFadt::mut_from_bytes(&mut fadt_bytes[..size_of::<AcpiFadt>()])?;
             let facs_addr = facs_info.as_ptr() as u64;
 
             log::trace!("Updating FADT with FACS address: 0x{:016X}", facs_addr);
@@ -299,7 +297,7 @@ where
             // SAFETY: The table pointer has been checked to be non-null; The table is valid to be read for at least the table's specified size.
             let table_bytes = unsafe { core::slice::from_raw_parts(entry_addr as *const u8, header.length as usize) };
 
-            // SAFETY: The table pointer has been checked to be non-null; The table is valid to be read for at least the table's specified size.
+            // SAFETY: The table has been validated to start with a proper ACPI header to the extend possible via `Self::header`.
             unsafe { self.install_table(table_bytes)? };
 
             // If this table points to other system tables, install them too.
@@ -322,7 +320,14 @@ where
 
         let fadt_ptr = fadt_bytes.as_ptr() as u64;
 
-        let fadt = AcpiFadt::mut_from_bytes(&mut fadt_bytes)?;
+        // Get the header to determine the actual table size
+        let header = Self::header(&fadt_bytes)?;
+        let table_size = header.length as usize;
+
+        // Take only the portion of the allocated memory that corresponds to the actual table size
+        let actual_fadt_bytes = &mut fadt_bytes[..table_size];
+
+        let fadt = AcpiFadt::mut_from_bytes(&mut actual_fadt_bytes[..size_of::<AcpiFadt>()])?;
 
         // If the FACS is already installed, update the FADT's x_firmware_ctrl field.
         // If not, it will be updated when the FACS is installed.
@@ -380,12 +385,10 @@ where
     pub(crate) fn install_dsdt(&self, mut dsdt_bytes: Box<[u8], PageFree>) -> Result<TableKey, AcpiError> {
         // If the FADT is already installed, update the FACP's x_dsdt field.
         // If not, it will be updated when the FACP is installed.
-        if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY)
-            && let Ok(fadt) = AcpiFadt::mut_from_bytes(fadt_bytes)
-        {
+        if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+            let fadt = AcpiFadt::mut_from_bytes(&mut fadt_bytes[..size_of::<AcpiFadt>()])?;
             let dsdt_addr = dsdt_bytes.as_ptr() as u64;
             log::trace!("Updating FADT with DSDT address: 0x{:016X}", dsdt_addr);
-            // SAFETY: The struct maintains an invariant mapping between the FADT and `Self::FADT_KEY`.
             fadt.inner.x_dsdt = dsdt_addr;
             Self::checksum(fadt_bytes);
         };
@@ -533,9 +536,8 @@ where
             signature::FACS => {
                 log::trace!("Deleting FACS table and updating FADT");
                 // Clear out the FACS pointer in the FADT.
-                if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY)
-                    && let Ok(fadt_table) = AcpiFadt::mut_from_bytes(fadt_bytes)
-                {
+                if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+                    let fadt_table = AcpiFadt::mut_from_bytes(&mut fadt_bytes[..size_of::<AcpiFadt>()])?;
                     fadt_table.set_x_firmware_ctrl(0);
 
                     // Also clear out the 32-bit pointer to the FACS. (This is an ACPI 1.0 legacy field.)
@@ -548,9 +550,8 @@ where
             signature::DSDT => {
                 log::trace!("Deleting DSDT table and updating FADT");
                 // Clear out the DSDT pointer in the FADT.
-                if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY)
-                    && let Ok(fadt_table) = AcpiFadt::mut_from_bytes(fadt_bytes)
-                {
+                if let Some(fadt_bytes) = self.acpi_tables.lock().get_mut(&Self::FADT_KEY) {
+                    let fadt_table = AcpiFadt::mut_from_bytes(&mut fadt_bytes[..size_of::<AcpiFadt>()])?;
                     fadt_table.set_x_dsdt(0);
                     Self::checksum(fadt_bytes);
                 }
@@ -725,8 +726,18 @@ where
 }
 
 impl<B: BootServices> Acpi for StandardAcpiProvider<B> {
+    /// Installs an ACPI table given its bytes.
+    ///
+    /// ## Safety
+    ///
+    /// The caller must ensure that the provided bytes start with a valid ACPI table header.
     unsafe fn install_table(&self, table: &[u8]) -> Result<TableKey, AcpiError> {
         let header = Self::header(table)?;
+
+        if header.length() as usize != table.len() {
+            return Err(AcpiError::InvalidLength);
+        }
+
         let table = self.allocate_table(table)?;
 
         let table_key = match header.signature {
@@ -750,7 +761,12 @@ impl<B: BootServices> Acpi for StandardAcpiProvider<B> {
     }
 
     fn get_table(&self, key: &TableKey) -> Result<Vec<u8>, AcpiError> {
-       self.acpi_tables.lock().get(key).map(|table| table.as_bytes().to_vec()).ok_or(AcpiError::NotFound)
+        let _guard = self.acpi_tables.lock();
+        let table = _guard.get(key).ok_or(AcpiError::InvalidTableKey)?;
+
+        let header = AcpiTableHeader::ref_from_prefix(table)?.0;
+
+        Ok(Vec::from(&table[..header.length() as usize]))
     }
 
     fn register_notify(&self, notify_fn: AcpiNotifyFn) -> Result<(), AcpiError> {
@@ -762,752 +778,829 @@ impl<B: BootServices> Acpi for StandardAcpiProvider<B> {
     }
 
     fn collect_tables(&self) -> Vec<Vec<u8>> {
-        self.acpi_tables.lock().values().map(|table| table.as_bytes().to_vec()).collect()
+        self.acpi_tables
+            .lock()
+            .values()
+            .map(|table| {
+                // The bytes always have a valid header by this point. But we will update to the table struct eventually
+                let header = AcpiTableHeader::ref_from_prefix(table).unwrap().0;
+
+                Vec::from(&table[..header.length() as usize])
+            })
+            .collect()
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-//     extern crate std;
-
-//     use crate::signature::MAX_INITIAL_ENTRIES;
-
-//     use super::*;
-//     use mockall::predicate::always;
-//     use patina::{
-//         boot_services::MockBootServices,
-//         component::service::memory::{MockMemoryManager, StdMemoryManager},
-//     };
-//     use r_efi::efi;
-//     use std::{
-//         boxed::Box,
-//         sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
-//     };
-
-//     #[repr(C, packed)]
-//     struct MockAcpiTable {
-//         _header: AcpiTableHeader,
-//         _data1: u8,
-//     }
-
-//     impl MockAcpiTable {
-//         fn new() -> Self {
-//             MockAcpiTable {
-//                 _header: AcpiTableHeader {
-//                     signature: 0x1111,
-//                     length: (ACPI_HEADER_LEN + 1) as u32,
-//                     ..Default::default()
-//                 },
-//                 _data1: 23,
-//             }
-//         }
-//     }
-
-//     #[test]
-//     fn test_get_table() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let mock_table =
-//             unsafe { AcpiTable::new(MockAcpiTable::new(), provider.memory_manager.get().unwrap()).unwrap() };
-//         let mock_table_addr = mock_table.as_ptr() as usize;
-//         let table_key = provider.install_standard_table(mock_table).unwrap();
-
-//         // Call get_acpi_table with a valid key.
-//         let fetched = provider.get_acpi_table(table_key).expect("table should have been installed");
-//         assert_eq!(fetched.signature(), 0x1111);
-//         assert_eq!(fetched.header().length(), (ACPI_HEADER_LEN + 1) as u32);
-//         assert_eq!(fetched.as_ptr() as usize, mock_table_addr);
-
-//         // Call with an invalid key (should return InvalidTableKey).
-//         let err = provider.get_acpi_table(TableKey(123123)).unwrap_err();
-//         assert!(matches!(err, AcpiError::InvalidTableKey));
-//     }
-
-//     #[test]
-//     fn test_register_notify() {
-//         fn dummy_notify(_table: &AcpiTableHeader, _value: u32, _key: usize) -> efi::Status {
-//             efi::Status::SUCCESS
-//         }
-
-//         let notify_fn: AcpiNotifyFn = dummy_notify;
-
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(MockMemoryManager::new()))).unwrap();
-
-//         provider.register_notify(true, notify_fn).expect("should register notify");
-//         {
-//             let list = provider.notify_list.lock();
-//             assert_eq!(list.len(), 1);
-//             assert_eq!(list[0] as usize, notify_fn as usize);
-//         }
-
-//         // Unregister the notify function.
-//         provider.register_notify(false, notify_fn).expect("should unregister notify");
-//         {
-//             let list = provider.notify_list.lock();
-//             assert!(list.is_empty());
-//         }
-
-//         // Attempt to unregister again — should fail.
-//         let result = provider.register_notify(false, notify_fn);
-//         assert!(matches!(result, Err(AcpiError::InvalidNotifyUnregister)));
-//     }
-
-//     #[test]
-//     fn test_iter() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         let header1 = AcpiTableHeader { signature: 0x1, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let table1 = unsafe { AcpiTable::new(header1, provider.memory_manager.get().unwrap()) };
-//         let header2 = AcpiTableHeader { signature: 0x2, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let table2 = unsafe { AcpiTable::new(header2, provider.memory_manager.get().unwrap()) };
-//         provider.install_standard_table(table1.unwrap()).expect("Install should succeed.");
-//         provider.install_standard_table(table2.unwrap()).expect("Install should succeed.");
-
-//         // Both tables should be in the list and in order
-//         let result = provider.collect_tables();
-//         assert_eq!(result.len(), 2);
-//         assert_eq!(result[0].signature(), 0x1);
-//         assert_eq!(result[0].header().length(), ACPI_HEADER_LEN as u32);
-//         assert_eq!(result[1].signature(), 0x2);
-//         assert_eq!(result[1].header().length(), ACPI_HEADER_LEN as u32);
-//     }
-
-//     #[test]
-//     fn test_install_fadt() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Initialize a mock XSDT.
-//         create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
-
-//         // Create dummy data for the FADT.
-//         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
-//         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let fadt_table = unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() };
-//         let key = provider.install_fadt(fadt_table.clone()).unwrap();
-
-//         // The key should return the FADT.
-//         let retrieved_fadt = provider.get_acpi_table(key).unwrap();
-//         assert_eq!(retrieved_fadt.signature(), signature::FADT);
-//         assert_eq!(retrieved_fadt.header().length(), 244);
-//         // The XSDT should have gained one entry (the FADT).
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), ACPI_HEADER_LEN as u32 + 8);
-
-//         // Any attempt to install the FADT again should fail.
-//         assert_eq!(provider.install_fadt(fadt_table.clone()).unwrap_err(), AcpiError::FadtAlreadyInstalled);
-//     }
-
-//     #[test]
-//     fn test_install_facs() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Create dummy data for FACS and FADT.
-//         let facs_info = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
-//         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
-//         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-
-//         // Install the FADT first.
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let fadt_key = provider
-//             .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-//             .unwrap();
-//         // Install the FACS.
-//         // SAFETY: The constructed table is a valid FACS.
-//         let res = unsafe {
-//             provider.install_facs(AcpiTable::new(facs_info, provider.memory_manager.get().unwrap()).unwrap())
-//         };
-
-//         // Make sure FACS was installed in the provider.
-//         assert!(res.is_ok());
-//         assert_eq!(provider.get_acpi_table(res.unwrap()).unwrap().signature(), signature::FACS);
-
-//         // Make sure FACS was installed into FADT.
-//         assert!({
-//             let table = provider.get_acpi_table(fadt_key).unwrap();
-//             // SAFETY: We know the table is an FADT (constructed above).
-//             unsafe { table.as_ref::<AcpiFadt>() }.x_firmware_ctrl() != 0
-//         });
-//     }
-
-//     #[test]
-//     fn test_add_dsdt_to_list() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Create dummy data for DSDT and FADT.
-//         let dsdt_info = AcpiDsdt {
-//             header: AcpiTableHeader {
-//                 signature: signature::DSDT,
-//                 length: ACPI_HEADER_LEN as u32,
-//                 ..Default::default()
-//             },
-//         };
-//         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
-//         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-//         // Install the FADT first.
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let fadt_key = provider
-//             .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-//             .unwrap();
-//         // Install the DSDT.
-//         // SAFETY: The constructed table is a valid ACPI table.
-//         let res = provider
-//             .install_dsdt(unsafe { AcpiTable::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap() });
-
-//         // Make sure DSDT was installed in the provider.
-//         assert!(res.is_ok());
-//         assert_eq!(provider.get_acpi_table(res.unwrap()).unwrap().signature(), signature::DSDT);
-
-//         // Make sure DSDT was installed into FADT.
-//         assert!({
-//             let table = provider.get_acpi_table(fadt_key).unwrap();
-//             // SAFETY: We know the table is an FADT (constructed above).
-//             unsafe { table.as_ref::<AcpiFadt>() }.x_dsdt() != 0
-//         });
-//     }
-
-//     // Helper to create a dummy RSDP in tests.
-//     fn create_dummy_rsdp(provider: &StandardAcpiProvider<MockBootServices>) {
-//         let rsdp_allocation = provider
-//             .memory_manager
-//             .get()
-//             .unwrap()
-//             .allocate_pages(1, patina::component::service::memory::AllocationOptions::new())
-//             .unwrap();
-
-//         // Get the raw pointer from the allocation.
-//         let rsdp_ptr: *mut AcpiRsdp = rsdp_allocation.into_raw_ptr().unwrap();
-//         // SAFETY: Correctly allocated by test.
-//         let rsdp_allocated = unsafe { &mut *rsdp_ptr };
-//         rsdp_allocated.signature = signature::ACPI_RSDP_TABLE;
-//         rsdp_allocated.revision = 2; // ACPI version 2.0
-//         provider.set_rsdp(rsdp_allocated);
-//     }
-
-//     // Helper function to create a dummy XSDT in tests.
-//     fn create_dummy_xsdt(starting_capacity: usize, provider: &StandardAcpiProvider<MockBootServices>) {
-//         // Calculate current size of the XSDT.
-//         let num_bytes = ACPI_HEADER_LEN + starting_capacity * ACPI_XSDT_ENTRY_SIZE;
-
-//         // Create initial XSDT data. (Starts off empty.)
-//         let xsdt_info = crate::acpi_table::AcpiXsdt {
-//             header: AcpiTableHeader {
-//                 signature: signature::XSDT,
-//                 length: ACPI_HEADER_LEN as u32,
-//                 ..Default::default()
-//             },
-//         };
-
-//         // The XSDT is always allocated in reclaim memory. (Doesn't matter for tests because it uses a mock memory manager.)
-//         let allocator = provider.memory_manager.get().unwrap().get_allocator(EfiMemoryType::ACPIReclaimMemory).unwrap();
-//         // Allocate buffer for XSDT.
-//         let mut xsdt_allocated_bytes = Vec::with_capacity_in(num_bytes, allocator);
-//         // Copy over existing data (just header).
-//         xsdt_allocated_bytes.extend(xsdt_info.header.hdr_to_bytes());
-//         // Fill in trailing space with zeros.
-//         xsdt_allocated_bytes.extend(core::iter::repeat_n(0u8, num_bytes - ACPI_HEADER_LEN));
-
-//         // Construct metadata.
-//         let xsdt_metadata = AcpiXsdtMetadata {
-//             n_entries: 0,
-//             max_capacity: starting_capacity,
-//             slice: xsdt_allocated_bytes.into_boxed_slice(),
-//         };
-
-//         // Update the provider with the new XSDT data.
-//         provider.set_xsdt(xsdt_metadata);
-//     }
-
-//     #[test]
-//     fn test_add_and_remove_xsdt() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-
-//         create_dummy_rsdp(&provider);
-//         create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
-
-//         const XSDT_ADDR: u64 = 0x1000_0000_0000_0004;
-
-//         let result = provider.add_entry_to_xsdt(XSDT_ADDR);
-//         assert!(result.is_ok());
-
-//         // We should now have 1 entry with address 0x1000_0000_0000_0004.
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, 1);
-//         assert_eq!(
-//             u64::from_le_bytes(
-//                 (provider.xsdt_metadata.lock().as_ref().unwrap().slice.get(ACPI_HEADER_LEN..ACPI_HEADER_LEN + 8))
-//                     .unwrap()
-//                     .try_into()
-//                     .unwrap()
-//             ),
-//             XSDT_ADDR
-//         );
-//         // Length should be ACPI_HEADER_LEN + 1 entry
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), (ACPI_HEADER_LEN + 8) as u32);
-
-//         // Try removing the table.
-//         provider.remove_table_from_xsdt(XSDT_ADDR).expect("Removal of entry should succeed.");
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, 0);
-//         // XSDT doesn't have to zero trailing entries, but should reduce length to mark the removed entry as invalid.
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), ACPI_HEADER_LEN as u32);
-//     }
-
-//     #[test]
-//     fn test_reallocate_xsdt() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-
-//         let initial_capacity = 2;
-//         create_dummy_rsdp(&provider);
-//         create_dummy_xsdt(initial_capacity, &provider);
-
-//         // Add entries up to capacity
-//         for i in 0..initial_capacity {
-//             let addr = 0x1000 + i as u64 * 0x10;
-//             provider.add_entry_to_xsdt(addr).expect("Should add entry");
-//         }
-//         assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, initial_capacity);
-
-//         // Now add one more entry, which should trigger reallocation.
-//         let new_addr = 0x2000;
-//         provider.add_entry_to_xsdt(new_addr).expect("Should add entry after reallocation");
-
-//         let xsdt_meta = provider.xsdt_metadata.lock();
-//         assert!(xsdt_meta.as_ref().unwrap().max_capacity > initial_capacity);
-//         assert_eq!(xsdt_meta.as_ref().unwrap().n_entries, initial_capacity + 1);
-
-//         // Check that all previous entries are still present.
-//         for i in 0..initial_capacity {
-//             let offset = ACPI_HEADER_LEN + i * ACPI_XSDT_ENTRY_SIZE;
-//             let entry_bytes = &xsdt_meta.as_ref().unwrap().slice[offset..offset + ACPI_XSDT_ENTRY_SIZE];
-//             let entry_addr = u64::from_le_bytes(entry_bytes.try_into().unwrap());
-//             assert_eq!(entry_addr, 0x1000 + i as u64 * 0x10);
-//         }
-//         // Check the new entry
-//         let offset = ACPI_HEADER_LEN + initial_capacity * ACPI_XSDT_ENTRY_SIZE;
-//         let entry_bytes = &xsdt_meta.as_ref().unwrap().slice[offset..offset + ACPI_XSDT_ENTRY_SIZE];
-//         let entry_addr = u64::from_le_bytes(entry_bytes.try_into().unwrap());
-//         assert_eq!(entry_addr, new_addr);
-//     }
-
-//     #[test]
-//     fn test_delete_table_facs() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Create a dummy XSDT.
-//         create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
-
-//         // Install FADT and FACS
-//         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
-//         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-//         // SAFETY: `fadt_info` is a valid ACPI table.
-//         let fadt_key = provider
-//             .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-//             .unwrap();
-
-//         let facs_info = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
-//         // SAFETY: `facs_info` is a valid ACPI table.
-//         let facs_table = unsafe { AcpiTable::new(facs_info, provider.memory_manager.get().unwrap()).unwrap() };
-//         // SAFETY: `facs_table` is constructed to be a valid FACS.
-//         let facs_key = unsafe { provider.install_facs(facs_table).unwrap() };
-
-//         // Delete FACS table.
-//         let result = provider.remove_table_from_list(facs_key);
-//         assert!(result.is_ok());
-
-//         // FACS should be removed.
-//         assert!(matches!(provider.get_acpi_table(facs_key).unwrap_err(), AcpiError::InvalidTableKey));
-
-//         // FADT's x_firmware_ctrl should be zero
-//         let fadt = provider.get_acpi_table(fadt_key).unwrap();
-//         // SAFETY: We know that `fadt` is indeed an AcpiFadt (constructed by test).
-//         assert_eq!(unsafe { fadt.as_ref::<AcpiFadt>() }.x_firmware_ctrl(), 0);
-//     }
-
-//     #[test]
-//     fn test_delete_table_dsdt() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
-
-//         // Install FADT and DSDT.
-//         let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
-//         let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
-//         // SAFETY: `fadt_info` is a valid ACPI table.
-//         let fadt_key = provider
-//             .install_fadt(unsafe { AcpiTable::new(fadt_info, provider.memory_manager.get().unwrap()).unwrap() })
-//             .unwrap();
-
-//         let dsdt_info = AcpiDsdt {
-//             header: AcpiTableHeader {
-//                 signature: signature::DSDT,
-//                 length: ACPI_HEADER_LEN as u32,
-//                 ..Default::default()
-//             },
-//         };
-//         // SAFETY: `dsdt_info` is a valid ACPI table.
-//         let dsdt_table = unsafe { AcpiTable::new(dsdt_info, provider.memory_manager.get().unwrap()).unwrap() };
-//         let dsdt_key = provider.install_dsdt(dsdt_table).unwrap();
-
-//         // Delete DSDT table.
-//         let result = provider.remove_table_from_list(dsdt_key);
-//         assert!(result.is_ok());
-
-//         // DSDT should be removed.
-//         assert!(matches!(provider.get_acpi_table(dsdt_key).unwrap_err(), AcpiError::InvalidTableKey));
-
-//         // FADT's x_dsdt should be zero
-//         let fadt = provider.get_acpi_table(fadt_key).unwrap();
-//         // SAFETY: We know that `fadt` is indeed an AcpiFadt (constructed by test).
-//         assert_eq!(unsafe { fadt.as_ref::<AcpiFadt>() }.x_dsdt(), 0);
-//     }
-
-//     fn mock_rsdp(rsdp_signature: u64, include_xsdt: bool, xsdt_length: usize, xsdt_signature: u32) -> u64 {
-//         let xsdt_ptr = if include_xsdt {
-//             // Always allocate at least ACPI_HEADER_LEN bytes so the header can be safely read,
-//             // even when testing invalid (shorter) length field values.
-//             let buf_size = xsdt_length.max(ACPI_HEADER_LEN);
-//             let mut xsdt_buf = vec![0u8; buf_size];
-
-//             // Write the caller-specified length into the header (may differ from actual allocation)
-//             let len_bytes = (xsdt_length as u32).to_le_bytes();
-//             xsdt_buf[4..8].copy_from_slice(&len_bytes);
-
-//             // Write the signature field of the XSDT
-//             let xsdt_sig = xsdt_signature.to_le_bytes();
-//             xsdt_buf[0..4].copy_from_slice(&xsdt_sig);
-
-//             // Leak the XSDT memory so that it persists during testing
-//             let static_xsdt: &'static [u8] = Box::leak(xsdt_buf.into_boxed_slice());
-//             static_xsdt.as_ptr() as u64
-//         } else {
-//             0
-//         };
-
-//         // Build a buffer for the fake RSDP
-//         let rsdp_size = size_of::<AcpiRsdp>();
-//         let mut rsdp_buf = vec![0u8; rsdp_size];
-
-//         // Copy the XSDT address to the RSDP
-//         let xsdt_addr_bytes = xsdt_ptr.to_le_bytes();
-//         rsdp_buf[24..32].copy_from_slice(&xsdt_addr_bytes);
-
-//         // Copy the desired signature to the signature field of the RSDP
-//         let sig_bytes = rsdp_signature.to_le_bytes();
-//         rsdp_buf[0..8].copy_from_slice(&sig_bytes);
-
-//         // Leak the RSDP memory so that it persists during testing
-//         let static_rsdp: &'static [u8] = Box::leak(rsdp_buf.into_boxed_slice());
-//         static_rsdp.as_ptr() as u64
-//     }
-
-//     #[test]
-//     fn test_get_xsdt_address() {
-//         // RSDP is null
-//         assert_eq!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(0).unwrap_err(),
-//             AcpiError::NullRsdpFromHob
-//         );
-
-//         // The RSDP has signature 0 (invalid)
-//         assert_eq!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(mock_rsdp(0, false, 0, 0))
-//                 .unwrap_err(),
-//             AcpiError::InvalidSignature
-//         );
-
-//         // The RSDP has a valid signature, but the XSDT is null
-//         assert_eq!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(mock_rsdp(
-//                 signature::ACPI_RSDP_TABLE,
-//                 false,
-//                 0,
-//                 0,
-//             ))
-//             .unwrap_err(),
-//             AcpiError::NullXsdt
-//         );
-
-//         // The RSDP is valid, but the XSDT has an invalid signature
-//         assert_eq!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(mock_rsdp(
-//                 signature::ACPI_RSDP_TABLE,
-//                 true,
-//                 ACPI_HEADER_LEN,
-//                 0,
-//             ))
-//             .unwrap_err(),
-//             AcpiError::InvalidSignature
-//         );
-
-//         // The RSDP is valid, but the XSDT has an invalid length
-//         assert_eq!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(mock_rsdp(
-//                 signature::ACPI_RSDP_TABLE,
-//                 true,
-//                 ACPI_HEADER_LEN - 1,
-//                 signature::XSDT,
-//             ))
-//             .unwrap_err(),
-//             AcpiError::XsdtInvalidLengthFromHob
-//         );
-
-//         // Both the RSDP and XSDT are valid
-//         assert!(
-//             StandardAcpiProvider::<MockBootServices>::get_xsdt_address_from_rsdp(mock_rsdp(
-//                 signature::ACPI_RSDP_TABLE,
-//                 true,
-//                 ACPI_HEADER_LEN,
-//                 signature::XSDT,
-//             ))
-//             .is_ok()
-//         );
-//     }
-
-//     #[test]
-//     fn test_install_tables_from_hob_normal_table() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         let mut mbs = MockBootServices::new();
-//         mbs.expect_install_configuration_table::<*mut core::ffi::c_void>()
-//             .with(always(), always())
-//             .times(..)
-//             .returning(|_, _| Ok(()));
-//         provider.initialize(mbs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-
-//         // Create a dummy normal ACPI table (not FADT, FACS, DSDT)
-//         let normal_header =
-//             AcpiTableHeader { signature: 0x010101, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         let normal_table_box = Box::new(normal_header);
-//         let normal_table_addr = Box::into_raw(normal_table_box) as u64;
-
-//         // Create a dummy XSDT with one entry (the normal table)
-//         let xsdt_len = ACPI_HEADER_LEN + mem::size_of::<u64>();
-//         let mut xsdt_buf = vec![0u8; xsdt_len];
-//         // Write XSDT header
-//         let xsdt_header = AcpiTableHeader { signature: signature::XSDT, length: xsdt_len as u32, ..Default::default() };
-//         xsdt_buf[..ACPI_HEADER_LEN].copy_from_slice(&xsdt_header.hdr_to_bytes());
-//         // Write normal table address as the first entry
-//         xsdt_buf[ACPI_HEADER_LEN..ACPI_HEADER_LEN + 8].copy_from_slice(&normal_table_addr.to_le_bytes());
-//         let xsdt_ptr = Box::into_raw(xsdt_buf.into_boxed_slice()) as *const u8 as u64;
-
-//         // Create a dummy RSDP pointing to the XSDT
-//         let rsdp = AcpiRsdp { signature: signature::ACPI_RSDP_TABLE, xsdt_address: xsdt_ptr, ..Default::default() };
-//         let rsdp_ptr = Box::into_raw(Box::new(rsdp));
-//         // SAFETY: We own the rsdp_ptr and will not use it after this test.
-//         provider.set_rsdp(unsafe { &mut *rsdp_ptr });
-//         let rsdp_addr = rsdp_ptr as u64;
-
-//         // Create the HOB
-//         let acpi_hob = Hob::mock(vec![AcpiMemoryHob::new(rsdp_addr)]);
-
-//         // Call install_tables_from_hob
-//         let result = provider.install_tables_from_hob(acpi_hob);
-//         assert!(result.is_ok());
-
-//         // The normal table should be installed
-//         let installed_tables = provider.collect_tables();
-//         assert_eq!(installed_tables.len(), 1);
-//         assert_eq!(installed_tables[0].signature(), 0x010101);
-//         assert_eq!(installed_tables[0].header().length(), ACPI_HEADER_LEN as u32);
-//     }
-
-//     #[test]
-//     fn test_initialize_error_cases() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         let mock_boot_services = MockBootServices::new();
-//         let mock_memory_manager: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
-
-//         // First initialization should succeed
-//         assert!(provider.initialize(mock_boot_services, mock_memory_manager.clone()).is_ok());
-
-//         // Second initialization with boot services should fail
-//         let err = provider.initialize(MockBootServices::new(), mock_memory_manager.clone()).unwrap_err();
-//         assert_eq!(err, AcpiError::BootServicesAlreadyInitialized);
-
-//         // Try initializing again with a new provider, but memory manager already set
-//         let provider2 = StandardAcpiProvider::new_uninit();
-//         // Set boot services first
-//         assert!(provider2.boot_services.set(MockBootServices::new()).is_ok());
-//         // Set memory manager first
-//         assert!(provider2.memory_manager.set(mock_memory_manager.clone()).is_ok());
-//         // Now initialize should fail for both fields
-//         let err = provider2.initialize(MockBootServices::new(), mock_memory_manager.clone()).unwrap_err();
-//         assert!(matches!(err, AcpiError::BootServicesAlreadyInitialized | AcpiError::MemoryManagerAlreadyInitialized));
-//     }
-
-//     #[test]
-//     fn test_install_fadt_tables_from_hob() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Create dummy FACS and DSDT tables
-//         let facs = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
-//         let dsdt = AcpiDsdt {
-//             header: AcpiTableHeader {
-//                 signature: signature::DSDT,
-//                 length: ACPI_HEADER_LEN as u32,
-//                 ..Default::default()
-//             },
-//         };
-
-//         // Allocate FACS and DSDT in memory and get their addresses
-//         let facs_box = Box::new(facs);
-//         let facs_addr = Box::into_raw(facs_box) as u64;
-//         let dsdt_box = Box::new(dsdt);
-//         let dsdt_addr = Box::into_raw(dsdt_box) as u64;
-
-//         // Create FADT pointing to FACS and DSDT
-//         let mut fadt = AcpiFadt {
-//             header: AcpiTableHeader { signature: signature::FADT, length: 244, ..Default::default() },
-//             ..Default::default()
-//         };
-//         fadt.inner.x_firmware_ctrl = facs_addr;
-//         fadt.inner.x_dsdt = dsdt_addr;
-
-//         // Install tables pointed to by FADT.
-//         let result = provider.install_tables_from_fadt(&fadt);
-//         assert!(result.is_ok());
-
-//         // FACS and DSDT should be installed
-//         let facs_table = provider.get_acpi_table(StandardAcpiProvider::<MockBootServices>::FACS_KEY);
-//         assert!(facs_table.is_ok());
-//         assert_eq!(facs_table.unwrap().signature(), signature::FACS);
-
-//         let dsdt_table = provider.get_acpi_table(StandardAcpiProvider::<MockBootServices>::DSDT_KEY);
-//         assert!(dsdt_table.is_ok());
-//         assert_eq!(dsdt_table.unwrap().signature(), signature::DSDT);
-//     }
-
-//     #[test]
-//     fn test_remove_table_from_xsdt_removes_correct_entry() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-
-//         create_dummy_rsdp(&provider);
-//         create_dummy_xsdt(3, &provider);
-
-//         // Add three entries
-//         let addr1 = 0x1000;
-//         let addr2 = 0x2000;
-//         let addr3 = 0x3000;
-//         provider.add_entry_to_xsdt(addr1).expect("Should add entry 1");
-//         provider.add_entry_to_xsdt(addr2).expect("Should add entry 2");
-//         provider.add_entry_to_xsdt(addr3).expect("Should add entry 3");
-
-//         // Remove the middle entry (addr2)
-//         provider.remove_table_from_xsdt(addr2).expect("Should remove entry 2");
-
-//         let xsdt_meta = provider.xsdt_metadata.lock();
-//         let xsdt_data = xsdt_meta.as_ref().unwrap();
-
-//         // n_entries should be 2
-//         assert_eq!(xsdt_data.n_entries, 2);
-
-//         // The remaining entries should be addr1 and addr3, in order
-//         let entry_bytes_0 = &xsdt_data.slice[ACPI_HEADER_LEN..ACPI_HEADER_LEN + ACPI_XSDT_ENTRY_SIZE];
-//         let entry_addr_0 = u64::from_le_bytes(entry_bytes_0.try_into().unwrap());
-//         assert_eq!(entry_addr_0, addr1);
-
-//         let entry_bytes_1 =
-//             &xsdt_data.slice[ACPI_HEADER_LEN + ACPI_XSDT_ENTRY_SIZE..ACPI_HEADER_LEN + 2 * ACPI_XSDT_ENTRY_SIZE];
-//         let entry_addr_1 = u64::from_le_bytes(entry_bytes_1.try_into().unwrap());
-//         assert_eq!(entry_addr_1, addr3);
-
-//         // The removed slot should be zeroed
-//         let removed_bytes =
-//             &xsdt_data.slice[ACPI_HEADER_LEN + 2 * ACPI_XSDT_ENTRY_SIZE..ACPI_HEADER_LEN + 3 * ACPI_XSDT_ENTRY_SIZE];
-//         assert!(removed_bytes.iter().all(|&b| b == 0));
-//     }
-
-//     #[test]
-//     fn test_notify_acpi_list_called_on_install() {
-//         static NOTIFY_CALLED: AtomicBool = AtomicBool::new(false);
-
-//         fn notify_fn(_table: &AcpiTableHeader, _version: u32, _key: usize) -> efi::Status {
-//             NOTIFY_CALLED.store(true, AtomicOrdering::SeqCst);
-//             efi::Status::SUCCESS
-//         }
-
-//         let provider = StandardAcpiProvider::new_uninit();
-//         let mut mbs = MockBootServices::new();
-//         mbs.expect_install_configuration_table::<*mut core::ffi::c_void>()
-//             .with(always(), always())
-//             .returning(|_, _| Ok(()));
-//         provider.initialize(mbs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Register notify function.
-//         provider.register_notify(true, notify_fn).expect("should register notify");
-
-//         // Install a standard table and check if notify was called.
-//         let header = AcpiTableHeader { signature: 0x0101, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         // SAFETY: `header` has a valid header format.
-//         let table = unsafe { AcpiTable::new(header, provider.memory_manager.get().unwrap()).unwrap() };
-//         let _ = provider.install_acpi_table(table).unwrap();
-
-//         // notify_acpi_list should have been called by install_standard_table.
-//         assert!(NOTIFY_CALLED.load(AtomicOrdering::SeqCst));
-//     }
-
-//     #[test]
-//     fn test_notify_acpi_list_error_on_invalid_key() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-
-//         // Try to notify with an invalid key
-//         let result = provider.notify_acpi_list(TableKey(99999));
-//         assert!(matches!(result, Err(AcpiError::TableNotifyFailed)));
-//     }
-
-//     #[test]
-//     fn test_get_table_at_idx_basic() {
-//         let provider = StandardAcpiProvider::new_uninit();
-//         provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
-//         create_dummy_rsdp(&provider);
-
-//         // Install two standard tables
-//         let header1 = AcpiTableHeader { signature: 0x10, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         // SAFETY: `table1` has the correct format by construction.
-//         let table1 = unsafe { AcpiTable::new(header1, provider.memory_manager.get().unwrap()).unwrap() };
-//         let key1 = provider.install_standard_table(table1).unwrap();
-
-//         let header2 = AcpiTableHeader { signature: 0x11, length: ACPI_HEADER_LEN as u32, ..Default::default() };
-//         // SAFETY: `table2` has the correct format by construction.
-//         let table2 = unsafe { AcpiTable::new(header2, provider.memory_manager.get().unwrap()).unwrap() };
-//         let key2 = provider.install_standard_table(table2).unwrap();
-
-//         // Index 0 should return the first table
-//         let (got_key1, got_table1) = provider.get_table_at_idx(0).unwrap();
-//         assert_eq!(got_key1, key1);
-//         assert_eq!(got_table1.signature(), 0x10);
-//         assert_eq!(got_table1.header().length(), ACPI_HEADER_LEN as u32);
-
-//         // Index 1 should return the second table
-//         let (got_key2, got_table2) = provider.get_table_at_idx(1).unwrap();
-//         assert_eq!(got_key2, key2);
-//         assert_eq!(got_table2.signature(), 0x11);
-//         assert_eq!(got_table2.header().length(), ACPI_HEADER_LEN as u32);
-
-//         // Index out of bounds should return error
-//         let err = provider.get_table_at_idx(3).unwrap_err();
-//         assert!(matches!(err, AcpiError::InvalidTableIndex));
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use crate::{
+        acpi_table::{AcpiDsdt, AcpiFacs},
+        signature::MAX_INITIAL_ENTRIES,
+    };
+
+    use super::*;
+    use mockall::predicate::always;
+    use patina::{
+        boot_services::MockBootServices,
+        component::service::memory::{MockMemoryManager, StdMemoryManager},
+    };
+    use r_efi::efi;
+    use std::{
+        boxed::Box,
+        sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
+    };
+
+    use zerocopy_derive::*;
+
+    #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
+    #[repr(C, packed)]
+    struct MockAcpiTable {
+        _header: AcpiTableHeader,
+        _data1: u8,
+    }
+
+    impl MockAcpiTable {
+        fn new() -> Self {
+            MockAcpiTable {
+                _header: AcpiTableHeader {
+                    signature: 0x1111,
+                    length: (ACPI_HEADER_LEN + 1) as u32,
+                    ..Default::default()
+                },
+                _data1: 23,
+            }
+        }
+    }
+
+    #[test]
+    fn test_get_table() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        let table = MockAcpiTable::new();
+
+        // SAFETY: The table starts with AcpiTableHeader.
+        let key = unsafe { provider.install_table(table.as_bytes()).unwrap() };
+
+        // Call get_acpi_table with a valid key.
+        let copied_bytes = provider.get_table(&key).expect("table should have been installed");
+        let fetched = MockAcpiTable::ref_from_bytes(&copied_bytes).unwrap();
+
+        assert_eq!(fetched._header.signature(), 0x1111);
+        assert_eq!(fetched._header.length(), (ACPI_HEADER_LEN + 1) as u32);
+
+        // Call with an invalid key (should return InvalidTableKey).
+        let err = provider.get_table(&TableKey(123123)).unwrap_err();
+        assert!(matches!(err, AcpiError::InvalidTableKey));
+    }
+
+    #[test]
+    fn test_register_notify() {
+        fn dummy_notify(_table: &AcpiTableHeader, _value: u32, _key: usize) -> efi::Status {
+            efi::Status::SUCCESS
+        }
+
+        let notify_fn: AcpiNotifyFn = dummy_notify;
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(MockMemoryManager::new()))).unwrap();
+
+        provider.register_notify(true, notify_fn).expect("should register notify");
+        {
+            let list = provider.notify_list.lock();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0] as usize, notify_fn as usize);
+        }
+
+        // Unregister the notify function.
+        provider.register_notify(false, notify_fn).expect("should unregister notify");
+        {
+            let list = provider.notify_list.lock();
+            assert!(list.is_empty());
+        }
+
+        // Attempt to unregister again — should fail.
+        let result = provider.register_notify(false, notify_fn);
+        assert!(matches!(result, Err(AcpiError::InvalidNotifyUnregister)));
+    }
+
+    #[test]
+    fn test_iter() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        let header1 = AcpiTableHeader { signature: 0x1, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+        let header2 = AcpiTableHeader { signature: 0x2, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+
+        // SAFETY: The tables starts with AcpiTableHeader
+        unsafe {
+            provider.install_table(header1.as_bytes()).expect("Install should succeed.");
+            provider.install_table(header2.as_bytes()).expect("Install should succeed.");
+        }
+
+        // Both tables should be in the list and in order
+        let mut result = provider.collect_tables().into_iter();
+        assert_eq!(result.len(), 2);
+
+        let table1_bytes = result.next().unwrap();
+        let table1 = AcpiTableHeader::ref_from_bytes(&table1_bytes).unwrap();
+        assert_eq!(table1.signature(), 0x1);
+        assert_eq!(table1.length(), ACPI_HEADER_LEN as u32);
+
+        let table2_bytes = result.next().unwrap();
+        let table2 = AcpiTableHeader::ref_from_bytes(&table2_bytes).unwrap();
+        assert_eq!(table2.signature(), 0x2);
+        assert_eq!(table2.length(), ACPI_HEADER_LEN as u32);
+    }
+
+    #[test]
+    fn test_install_fadt() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Initialize a mock XSDT.
+        create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
+
+        // Create dummy data for the FADT - use the same pattern as working tests
+        // Create a proper FADT header with the correct length
+        let fadt_header = AcpiTableHeader {
+            signature: signature::FACP,
+            length: 244, // Use hardcoded length like the commented tests
+            ..Default::default()
+        };
+
+        // Create a buffer with the right size and copy the header
+        let mut fadt_bytes = vec![0u8; 244];
+        let header_bytes = fadt_header.as_bytes();
+        fadt_bytes[..header_bytes.len()].copy_from_slice(header_bytes);
+
+        // SAFETY: The table starts with AcpiTableHeader
+        let key = unsafe { provider.install_table(&fadt_bytes).unwrap() };
+
+        // The key should return the FADT.
+        let table_bytes = provider.get_table(&key).unwrap();
+        let table = AcpiTableHeader::ref_from_prefix(&table_bytes).unwrap().0;
+        assert_eq!(table.signature(), signature::FADT);
+        assert_eq!(table.length(), 244);
+        // The XSDT should have gained one entry (the FADT).
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), ACPI_HEADER_LEN as u32 + 8);
+
+        // Any attempt to install the FADT again should fail.
+        // SAFETY: This table starts with AcpiTableHeader
+        unsafe { assert_eq!(provider.install_table(&table_bytes).unwrap_err(), AcpiError::FadtAlreadyInstalled) };
+    }
+
+    #[test]
+    fn test_install_facs() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Create dummy data for FACS and FADT.
+        let facs_info =
+            AcpiFacs { signature: signature::FACS, length: size_of::<AcpiFacs>() as u32, ..Default::default() };
+        let fadt_header =
+            AcpiTableHeader { signature: signature::FACP, length: size_of::<AcpiFadt>() as u32, ..Default::default() };
+        let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
+
+        // SAFETY: The tables starts with AcpiTableHeader
+        let (fadt_key, facs_key) = unsafe {
+            let fadt_key = provider.install_table(fadt_info.as_bytes()).unwrap();
+            let facs_key = provider.install_table(facs_info.as_bytes()).unwrap();
+            (fadt_key, facs_key)
+        };
+
+        // Make sure FACS was installed in the provider.
+        let table_bytes = provider.get_table(&facs_key).unwrap();
+        let table = AcpiFacs::ref_from_bytes(&table_bytes).unwrap();
+        let signature = table.signature;
+        assert_eq!(signature, signature::FACS);
+
+        let table_bytes = provider.get_table(&fadt_key).unwrap();
+        let table = AcpiFadt::ref_from_bytes(&table_bytes).unwrap();
+        assert_eq!(table.header.signature(), signature::FADT);
+        assert!(table.x_firmware_ctrl() != 0);
+    }
+
+    #[test]
+    fn test_add_dsdt_to_list() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Create dummy data for DSDT and FADT.
+        let dsdt_info = AcpiDsdt {
+            header: AcpiTableHeader {
+                signature: signature::DSDT,
+                length: ACPI_HEADER_LEN as u32,
+                ..Default::default()
+            },
+        };
+        let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
+        let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
+
+        // SAFETY: The tables starts with AcpiTableHeader
+        let (fadt_key, dsdt_key) = unsafe {
+            let fadt_key = provider.install_table(fadt_info.as_bytes()).unwrap();
+            let dsdt_key = provider.install_table(dsdt_info.as_bytes()).unwrap();
+            (fadt_key, dsdt_key)
+        };
+
+        // Make sure DSDT was installed in the provider.
+        let table_bytes = provider.get_table(&dsdt_key).unwrap();
+        let table = AcpiDsdt::ref_from_bytes(&table_bytes).unwrap();
+        assert_eq!(table.header.signature(), signature::DSDT);
+
+        // Make sure DSDT was installed into FADT.
+        let table_bytes = provider.get_table(&fadt_key).unwrap();
+        let table = AcpiFadt::ref_from_bytes(&table_bytes).unwrap();
+        assert_eq!(table.header.signature(), signature::FADT);
+        assert!(table.x_dsdt() != 0);
+    }
+
+    // Helper to create a dummy RSDP in tests.
+    fn create_dummy_rsdp(provider: &StandardAcpiProvider<MockBootServices>) {
+        let rsdp_allocation = provider
+            .memory_manager
+            .allocate_pages(1, patina::component::service::memory::AllocationOptions::new())
+            .unwrap();
+
+        // Get the raw pointer from the allocation.
+        let rsdp_ptr: *mut AcpiRsdp = rsdp_allocation.into_raw_ptr().unwrap();
+        // SAFETY: Correctly allocated by test.
+        let rsdp_allocated = unsafe { &mut *rsdp_ptr };
+        rsdp_allocated.signature = signature::ACPI_RSDP_TABLE;
+        rsdp_allocated.revision = 2; // ACPI version 2.0
+        provider.set_rsdp(rsdp_allocated);
+    }
+
+    // Helper function to create a dummy XSDT in tests.
+    fn create_dummy_xsdt(starting_capacity: usize, provider: &StandardAcpiProvider<MockBootServices>) {
+        // Calculate current size of the XSDT.
+        let num_bytes = ACPI_HEADER_LEN + starting_capacity * ACPI_XSDT_ENTRY_SIZE;
+
+        // Create initial XSDT data. (Starts off empty.)
+        let xsdt_header =
+            AcpiTableHeader { signature: signature::XSDT, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+
+        // The XSDT is always allocated in reclaim memory. (Doesn't matter for tests because it uses a mock memory manager.)
+        let allocator = provider.memory_manager.get_allocator(EfiMemoryType::ACPIReclaimMemory).unwrap();
+        // Allocate buffer for XSDT.
+        let mut xsdt_allocated_bytes = Vec::with_capacity_in(num_bytes, allocator);
+        // Copy over existing data (just header).
+        xsdt_allocated_bytes.extend(xsdt_header.hdr_to_bytes());
+        // Fill in trailing space with zeros.
+        xsdt_allocated_bytes.extend(core::iter::repeat_n(0u8, num_bytes - ACPI_HEADER_LEN));
+
+        // Construct metadata.
+        let xsdt_metadata = AcpiXsdtMetadata {
+            n_entries: 0,
+            max_capacity: starting_capacity,
+            slice: xsdt_allocated_bytes.into_boxed_slice(),
+        };
+
+        // Update the provider with the new XSDT data.
+        provider.set_xsdt(xsdt_metadata);
+    }
+
+    #[test]
+    fn test_add_and_remove_xsdt() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        create_dummy_rsdp(&provider);
+        create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
+
+        const XSDT_ADDR: u64 = 0x1000_0000_0000_0004;
+
+        let result = provider.add_entry_to_xsdt(XSDT_ADDR);
+        assert!(result.is_ok());
+
+        // We should now have 1 entry with address 0x1000_0000_0000_0004.
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, 1);
+        assert_eq!(
+            u64::from_le_bytes(
+                (provider.xsdt_metadata.lock().as_ref().unwrap().slice.get(ACPI_HEADER_LEN..ACPI_HEADER_LEN + 8))
+                    .unwrap()
+                    .try_into()
+                    .unwrap()
+            ),
+            XSDT_ADDR
+        );
+        // Length should be ACPI_HEADER_LEN + 1 entry
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), (ACPI_HEADER_LEN + 8) as u32);
+
+        // Try removing the table.
+        provider.remove_table_from_xsdt(XSDT_ADDR).expect("Removal of entry should succeed.");
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, 0);
+        // XSDT doesn't have to zero trailing entries, but should reduce length to mark the removed entry as invalid.
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().get_length().unwrap(), ACPI_HEADER_LEN as u32);
+    }
+
+    #[test]
+    fn test_reallocate_xsdt() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        let initial_capacity = 2;
+        create_dummy_rsdp(&provider);
+        create_dummy_xsdt(initial_capacity, &provider);
+
+        // Add entries up to capacity
+        for i in 0..initial_capacity {
+            let addr = 0x1000 + i as u64 * 0x10;
+            provider.add_entry_to_xsdt(addr).expect("Should add entry");
+        }
+        assert_eq!(provider.xsdt_metadata.lock().as_ref().unwrap().n_entries, initial_capacity);
+
+        // Now add one more entry, which should trigger reallocation.
+        let new_addr = 0x2000;
+        provider.add_entry_to_xsdt(new_addr).expect("Should add entry after reallocation");
+
+        let xsdt_meta = provider.xsdt_metadata.lock();
+        assert!(xsdt_meta.as_ref().unwrap().max_capacity > initial_capacity);
+        assert_eq!(xsdt_meta.as_ref().unwrap().n_entries, initial_capacity + 1);
+
+        // Check that all previous entries are still present.
+        for i in 0..initial_capacity {
+            let offset = ACPI_HEADER_LEN + i * ACPI_XSDT_ENTRY_SIZE;
+            let entry_bytes = &xsdt_meta.as_ref().unwrap().slice[offset..offset + ACPI_XSDT_ENTRY_SIZE];
+            let entry_addr = u64::from_le_bytes(entry_bytes.try_into().unwrap());
+            assert_eq!(entry_addr, 0x1000 + i as u64 * 0x10);
+        }
+        // Check the new entry
+        let offset = ACPI_HEADER_LEN + initial_capacity * ACPI_XSDT_ENTRY_SIZE;
+        let entry_bytes = &xsdt_meta.as_ref().unwrap().slice[offset..offset + ACPI_XSDT_ENTRY_SIZE];
+        let entry_addr = u64::from_le_bytes(entry_bytes.try_into().unwrap());
+        assert_eq!(entry_addr, new_addr);
+    }
+
+    #[test]
+    fn test_delete_table_facs() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Create a dummy XSDT.
+        create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
+
+        // Install FADT and FACS
+        let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
+        let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
+
+        // SAFETY: The table starts with an AcpiTableHeader
+        let fadt_key = unsafe { provider.install_table(fadt_info.as_bytes()).unwrap() };
+
+        let facs_info = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
+        // SAFETY: The table starts with an AcpiTableHeader
+        let facs_key = unsafe { provider.install_table(facs_info.as_bytes()).unwrap() };
+
+        // Delete FACS table.
+        let result = provider.remove_table_from_list(facs_key);
+        assert!(result.is_ok());
+
+        // FACS should be removed.
+        assert!(matches!(provider.get_table(&facs_key).unwrap_err(), AcpiError::InvalidTableKey));
+
+        // FADT's x_firmware_ctrl should be zero
+        let fadt = provider.get_table(&fadt_key).unwrap();
+        assert_eq!(AcpiFadt::ref_from_bytes(&fadt).unwrap().x_firmware_ctrl(), 0);
+    }
+
+    #[test]
+    fn test_delete_table_dsdt() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        create_dummy_xsdt(MAX_INITIAL_ENTRIES, &provider);
+
+        // Install FADT and DSDT.
+        let fadt_header = AcpiTableHeader { signature: signature::FACP, length: 244, ..Default::default() };
+        let fadt_info = AcpiFadt { header: fadt_header, ..Default::default() };
+
+        // SAFETY: The table starts with an AcpiTableHeader
+        let fadt_key = unsafe { provider.install_table(fadt_info.as_bytes()).unwrap() };
+
+        let dsdt_info = AcpiDsdt {
+            header: AcpiTableHeader {
+                signature: signature::DSDT,
+                length: ACPI_HEADER_LEN as u32,
+                ..Default::default()
+            },
+        };
+
+        // SAFETY: The table starts with an AcpiTableHeader
+        let dsdt_key = unsafe { provider.install_table(dsdt_info.as_bytes()).unwrap() };
+
+        // Delete DSDT table.
+        let result = provider.remove_table_from_list(dsdt_key);
+        assert!(result.is_ok());
+
+        // DSDT should be removed.
+        assert!(matches!(provider.get_table(&dsdt_key).unwrap_err(), AcpiError::InvalidTableKey));
+
+        // FADT's x_dsdt should be zero
+        let fadt = provider.get_table(&fadt_key).unwrap();
+        // SAFETY: We know that `fadt` is indeed an AcpiFadt (constructed by test).
+        assert_eq!(AcpiFadt::ref_from_bytes(&fadt).unwrap().x_dsdt(), 0);
+    }
+
+    fn mock_rsdp(rsdp_signature: u64, include_xsdt: bool, xsdt_length: usize, xsdt_signature: u32) -> Box<[u8]> {
+        let xsdt_ptr = if include_xsdt {
+            // Always allocate at least ACPI_HEADER_LEN bytes so the header can be safely read,
+            // even when testing invalid (shorter) length field values.
+            let buf_size = xsdt_length.max(ACPI_HEADER_LEN);
+            let mut xsdt_buf = vec![0u8; buf_size];
+
+            // Write the caller-specified length into the header (may differ from actual allocation)
+            let len_bytes = (xsdt_length as u32).to_le_bytes();
+            xsdt_buf[4..8].copy_from_slice(&len_bytes);
+
+            // Write the signature field of the XSDT
+            let xsdt_sig = xsdt_signature.to_le_bytes();
+            xsdt_buf[0..4].copy_from_slice(&xsdt_sig);
+
+            // Leak the XSDT memory so that it persists during testing
+            let static_xsdt: &'static [u8] = Box::leak(xsdt_buf.into_boxed_slice());
+            static_xsdt.as_ptr() as u64
+        } else {
+            0
+        };
+
+        // Build a buffer for the fake RSDP
+        let rsdp_size = size_of::<AcpiRsdp>();
+        let mut rsdp_buf = vec![0u8; rsdp_size];
+
+        // Copy the XSDT address to the RSDP
+        let xsdt_addr_bytes = xsdt_ptr.to_le_bytes();
+        rsdp_buf[24..32].copy_from_slice(&xsdt_addr_bytes);
+
+        // Copy the desired signature to the signature field of the RSDP
+        let sig_bytes = rsdp_signature.to_le_bytes();
+        rsdp_buf[0..8].copy_from_slice(&sig_bytes);
+
+        rsdp_buf.into_boxed_slice()
+    }
+
+    #[test]
+    fn test_get_xsdt_address() {
+        let rsdp_bytes = mock_rsdp(signature::ACPI_RSDP_TABLE, false, 0, 0);
+        let rsdp = AcpiRsdp::ref_from_bytes(&rsdp_bytes).unwrap();
+
+        // The RSDP has a valid signature, but the XSDT is null
+        assert_eq!(
+            StandardAcpiProvider::<MockBootServices>::get_xsdt_from_rsdp(rsdp).unwrap_err(),
+            AcpiError::NullXsdt
+        );
+
+        let rsdp_bytes = mock_rsdp(signature::ACPI_RSDP_TABLE, true, ACPI_HEADER_LEN, 0);
+        let rsdp = AcpiRsdp::ref_from_bytes(&rsdp_bytes).unwrap();
+        // The RSDP is valid, but the XSDT has an invalid signature
+        assert_eq!(
+            StandardAcpiProvider::<MockBootServices>::get_xsdt_from_rsdp(rsdp).unwrap_err(),
+            AcpiError::InvalidSignature
+        );
+
+        let rsdp_bytes = mock_rsdp(signature::ACPI_RSDP_TABLE, true, ACPI_HEADER_LEN - 1, signature::XSDT);
+        let rsdp = AcpiRsdp::ref_from_bytes(&rsdp_bytes).unwrap();
+        // The RSDP is valid, but the XSDT has an invalid length
+        assert_eq!(
+            StandardAcpiProvider::<MockBootServices>::get_xsdt_from_rsdp(rsdp).unwrap_err(),
+            AcpiError::InvalidLength
+        );
+
+        let rsdp_bytes = mock_rsdp(signature::ACPI_RSDP_TABLE, true, ACPI_HEADER_LEN - 1, signature::XSDT);
+        let rsdp = AcpiRsdp::ref_from_bytes(&rsdp_bytes).unwrap();
+        // Both the RSDP and XSDT are valid
+        assert_eq!(
+            StandardAcpiProvider::<MockBootServices>::get_xsdt_from_rsdp(rsdp).unwrap_err(),
+            AcpiError::InvalidLength
+        );
+
+        let rsdp_bytes = mock_rsdp(signature::ACPI_RSDP_TABLE, true, ACPI_HEADER_LEN, signature::XSDT);
+        let rsdp = AcpiRsdp::ref_from_bytes(&rsdp_bytes).unwrap();
+        // Both the RSDP and XSDT are valid
+        assert!(StandardAcpiProvider::<MockBootServices>::get_xsdt_from_rsdp(rsdp).is_ok());
+    }
+
+    #[test]
+    fn test_install_tables_from_hob_normal_table() {
+        let provider = StandardAcpiProvider::new_uninit();
+        let mut mbs = MockBootServices::new();
+        mbs.expect_install_configuration_table::<*mut core::ffi::c_void>()
+            .with(always(), always())
+            .times(..)
+            .returning(|_, _| Ok(()));
+        provider.initialize(mbs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        // Create a dummy normal ACPI table (not FADT, FACS, DSDT)
+        let normal_header =
+            AcpiTableHeader { signature: 0x010101, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+        let normal_table_box = Box::new(normal_header);
+        let normal_table_addr = Box::into_raw(normal_table_box) as u64;
+
+        // Create a dummy XSDT with one entry (the normal table)
+        let xsdt_len = ACPI_HEADER_LEN + mem::size_of::<u64>();
+        let mut xsdt_buf = vec![0u8; xsdt_len];
+        // Write XSDT header
+        let xsdt_header = AcpiTableHeader { signature: signature::XSDT, length: xsdt_len as u32, ..Default::default() };
+        xsdt_buf[..ACPI_HEADER_LEN].copy_from_slice(&xsdt_header.hdr_to_bytes());
+        // Write normal table address as the first entry
+        xsdt_buf[ACPI_HEADER_LEN..ACPI_HEADER_LEN + 8].copy_from_slice(&normal_table_addr.to_le_bytes());
+        let xsdt_ptr = Box::into_raw(xsdt_buf.into_boxed_slice()) as *const u8 as u64;
+
+        // Create a dummy RSDP pointing to the XSDT
+        let rsdp = AcpiRsdp { signature: signature::ACPI_RSDP_TABLE, xsdt_address: xsdt_ptr, ..Default::default() };
+        let rsdp_ptr = Box::into_raw(Box::new(rsdp));
+        // SAFETY: We own the rsdp_ptr and will not use it after this test.
+        provider.set_rsdp(unsafe { &mut *rsdp_ptr });
+        let rsdp_addr = rsdp_ptr as u64;
+
+        // Create the HOB
+        let acpi_hob = Hob::mock(vec![AcpiMemoryHob::new(rsdp_addr)]);
+
+        // Call install_tables_from_hob
+        let result = provider.install_tables_from_hob(acpi_hob);
+        assert!(result.is_ok());
+
+        // The normal table should be installed
+        let installed_tables = provider.collect_tables();
+        assert_eq!(installed_tables.len(), 1);
+
+        let header = AcpiTableHeader::ref_from_bytes(&installed_tables[0]).unwrap();
+        assert_eq!(header.signature(), 0x010101);
+        assert_eq!(header.length(), ACPI_HEADER_LEN as u32);
+    }
+
+    #[test]
+    fn test_initialize_error_cases() {
+        let provider = StandardAcpiProvider::new_uninit();
+        let mock_boot_services = MockBootServices::new();
+        let mock_memory_manager: Service<dyn MemoryManager> = Service::mock(Box::new(StdMemoryManager::new()));
+
+        // First initialization should succeed
+        assert!(provider.initialize(mock_boot_services, mock_memory_manager.clone()).is_ok());
+
+        // Second initialization with boot services should fail
+        let err = provider.initialize(MockBootServices::new(), mock_memory_manager.clone()).unwrap_err();
+        assert_eq!(err, AcpiError::BootServicesAlreadyInitialized);
+
+        // Try initializing again with a new provider, but memory manager already set
+        let provider2 = StandardAcpiProvider::new_uninit();
+        // Set boot services
+        assert!(provider2.boot_services.set(MockBootServices::new()).is_ok());
+        // Now initialize should fail
+        let err = provider2.initialize(MockBootServices::new(), mock_memory_manager.clone()).unwrap_err();
+        assert!(matches!(err, AcpiError::BootServicesAlreadyInitialized));
+    }
+
+    #[test]
+    fn test_install_fadt_tables_from_hob() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Create dummy FACS and DSDT tables
+        let facs = AcpiFacs { signature: signature::FACS, length: 64, ..Default::default() };
+        let dsdt = AcpiDsdt {
+            header: AcpiTableHeader {
+                signature: signature::DSDT,
+                length: ACPI_HEADER_LEN as u32,
+                ..Default::default()
+            },
+        };
+
+        // Allocate FACS and DSDT in memory and get their addresses
+        let facs_box = Box::new(facs);
+        let facs_addr = Box::into_raw(facs_box) as u64;
+        let dsdt_box = Box::new(dsdt);
+        let dsdt_addr = Box::into_raw(dsdt_box) as u64;
+
+        // Create FADT pointing to FACS and DSDT
+        let mut fadt = AcpiFadt {
+            header: AcpiTableHeader { signature: signature::FADT, length: 244, ..Default::default() },
+            ..Default::default()
+        };
+        fadt.inner.x_firmware_ctrl = facs_addr;
+        fadt.inner.x_dsdt = dsdt_addr;
+
+        // Install tables pointed to by FADT.
+        let result = provider.install_tables_from_fadt(&fadt);
+        assert!(result.is_ok());
+
+        // FACS and DSDT should be installed
+        let facs_table = provider.get_table(&StandardAcpiProvider::<MockBootServices>::FACS_KEY).unwrap();
+        let table = AcpiFacs::ref_from_bytes(&facs_table).unwrap();
+        let signature = table.signature;
+        assert_eq!(signature, signature::FACS);
+
+        let dsdt_table = provider.get_table(&StandardAcpiProvider::<MockBootServices>::DSDT_KEY).unwrap();
+        let table = AcpiDsdt::ref_from_bytes(&dsdt_table).unwrap();
+        let signature = table.header.signature;
+        assert_eq!(signature, signature::DSDT);
+    }
+
+    #[test]
+    fn test_remove_table_from_xsdt_removes_correct_entry() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        create_dummy_rsdp(&provider);
+        create_dummy_xsdt(3, &provider);
+
+        // Add three entries
+        let addr1 = 0x1000;
+        let addr2 = 0x2000;
+        let addr3 = 0x3000;
+        provider.add_entry_to_xsdt(addr1).expect("Should add entry 1");
+        provider.add_entry_to_xsdt(addr2).expect("Should add entry 2");
+        provider.add_entry_to_xsdt(addr3).expect("Should add entry 3");
+
+        // Remove the middle entry (addr2)
+        provider.remove_table_from_xsdt(addr2).expect("Should remove entry 2");
+
+        let xsdt_meta = provider.xsdt_metadata.lock();
+        let xsdt_data = xsdt_meta.as_ref().unwrap();
+
+        // n_entries should be 2
+        assert_eq!(xsdt_data.n_entries, 2);
+
+        // The remaining entries should be addr1 and addr3, in order
+        let entry_bytes_0 = &xsdt_data.slice[ACPI_HEADER_LEN..ACPI_HEADER_LEN + ACPI_XSDT_ENTRY_SIZE];
+        let entry_addr_0 = u64::from_le_bytes(entry_bytes_0.try_into().unwrap());
+        assert_eq!(entry_addr_0, addr1);
+
+        let entry_bytes_1 =
+            &xsdt_data.slice[ACPI_HEADER_LEN + ACPI_XSDT_ENTRY_SIZE..ACPI_HEADER_LEN + 2 * ACPI_XSDT_ENTRY_SIZE];
+        let entry_addr_1 = u64::from_le_bytes(entry_bytes_1.try_into().unwrap());
+        assert_eq!(entry_addr_1, addr3);
+
+        // The removed slot should be zeroed
+        let removed_bytes =
+            &xsdt_data.slice[ACPI_HEADER_LEN + 2 * ACPI_XSDT_ENTRY_SIZE..ACPI_HEADER_LEN + 3 * ACPI_XSDT_ENTRY_SIZE];
+        assert!(removed_bytes.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_notify_acpi_list_called_on_install() {
+        static NOTIFY_CALLED: AtomicBool = AtomicBool::new(false);
+
+        fn notify_fn(_table: &AcpiTableHeader, _version: u32, _key: usize) -> efi::Status {
+            NOTIFY_CALLED.store(true, AtomicOrdering::SeqCst);
+            efi::Status::SUCCESS
+        }
+
+        let provider = StandardAcpiProvider::new_uninit();
+        let mut mbs = MockBootServices::new();
+        mbs.expect_install_configuration_table::<*mut core::ffi::c_void>()
+            .with(always(), always())
+            .returning(|_, _| Ok(()));
+        provider.initialize(mbs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        // Register notify function.
+        provider.register_notify(true, notify_fn).expect("should register notify");
+
+        // Install a standard table and check if notify was called.
+        let header = AcpiTableHeader { signature: 0x0101, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+
+        // SAFETY: The table starts with AcpiTableHeader
+        let _ = unsafe { provider.install_table(header.as_bytes()).unwrap() };
+
+        // notify_acpi_list should have been called by install_standard_table.
+        assert!(NOTIFY_CALLED.load(AtomicOrdering::SeqCst));
+    }
+
+    #[test]
+    fn test_notify_acpi_list_error_on_invalid_key() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        // Try to notify with an invalid key
+        let result = provider.notify_acpi_list(TableKey(99999));
+        assert!(matches!(result, Err(AcpiError::TableNotifyFailed)));
+    }
+
+    #[test]
+    fn test_get_table_at_idx_basic() {
+        let mut bs = MockBootServices::new();
+        bs.expect_install_configuration_table().returning(|_, _: *mut c_void| Ok(()));
+
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(bs, Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+        create_dummy_rsdp(&provider);
+
+        let header1 = AcpiTableHeader { signature: 0x10, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+        // SAFETY: The tables starts with AcpiTableHeader
+        let key1 = unsafe { provider.install_table(header1.as_bytes()).unwrap() };
+
+        let header2 = AcpiTableHeader { signature: 0x11, length: ACPI_HEADER_LEN as u32, ..Default::default() };
+        // SAFETY: The tables starts with AcpiTableHeader
+        let key2 = unsafe { provider.install_table(header2.as_bytes()).unwrap() };
+
+        // Index 0 should return the first table
+        let (got_key1, got_table1) = provider.get_table_at_idx(0).unwrap();
+        assert_eq!(got_key1, key1);
+        // SAFETY: We know that got_table2 points to a valid AcpiTableHeader
+        let got_table1 = unsafe { got_table1.read_unaligned() };
+        assert_eq!(got_table1.signature(), 0x10);
+        assert_eq!(got_table1.length(), ACPI_HEADER_LEN as u32);
+
+        // Index 1 should return the second table
+        let (got_key2, got_table2) = provider.get_table_at_idx(1).unwrap();
+        assert_eq!(got_key2, key2);
+        // SAFETY: We know that got_table2 points to a valid AcpiTableHeader
+        let got_table2 = unsafe { got_table2.read_unaligned() };
+        assert_eq!(got_table2.signature(), 0x11);
+        assert_eq!(got_table2.length(), ACPI_HEADER_LEN as u32);
+
+        // Index out of bounds should return error
+        let err = provider.get_table_at_idx(3).unwrap_err();
+        assert!(matches!(err, AcpiError::InvalidTableIndex));
+    }
+
+    #[derive(IntoBytes, FromBytes, Immutable)]
+    #[repr(packed, C)]
+    struct TestTable {
+        header: AcpiTableHeader,
+        body: [u8; 3],
+    }
+
+    const TEST_SIGNATURE: u32 = 0x123;
+
+    #[test]
+    fn test_update_checksum_on_real_acpi_table() {
+        // Build a mock table.
+        let mut test_table = TestTable {
+            header: AcpiTableHeader {
+                signature: TEST_SIGNATURE,
+                length: (mem::size_of::<TestTable>()) as u32,
+                revision: 1,
+                checksum: 0, // we'll fill this
+                oem_id: [0; 6],
+                oem_table_id: *b"TBL_ID__",
+                oem_revision: 0xAABBCCDD,
+                creator_id: 0x11223344,
+                creator_revision: 0x55667788,
+            },
+            body: [10, 20, 30], // some payload bytes
+        };
+
+        StandardAcpiProvider::<StandardBootServices>::checksum(test_table.as_mut_bytes());
+
+        // With the checksum field correctly filled, the entire table should sum to zero mod 256.
+        let total: u8 = test_table.as_bytes().iter().copied().fold(0u8, |acc, b| acc.wrapping_add(b));
+        assert_eq!(total, 0, "entire table did not sum to zero");
+    }
+
+    #[test]
+    fn test_install_table_rejects_table_with_invalid_length() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 100, ..Default::default() };
+
+        // SAFETY: The header has a valid layout. This tests that the length mismatch is caught.
+        let result = unsafe { provider.install_table(header.as_bytes()) };
+        assert!(matches!(result, Err(AcpiError::InvalidLength)));
+    }
+
+    #[test]
+    fn test_new_rejects_length_less_than_struct_size() {
+        let provider = StandardAcpiProvider::new_uninit();
+        provider.initialize(MockBootServices::new(), Service::mock(Box::new(StdMemoryManager::new()))).unwrap();
+
+        let header = AcpiTableHeader { signature: TEST_SIGNATURE, length: 10, ..Default::default() };
+
+        // SAFETY: The header has a valid layout. This tests that the length mismatch is caught.
+        let result = unsafe { provider.install_table(header.as_bytes()) };
+        assert!(matches!(result, Err(AcpiError::InvalidLength)));
+    }
+}

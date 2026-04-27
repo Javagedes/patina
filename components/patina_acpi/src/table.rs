@@ -1,5 +1,7 @@
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
+use alloc::vec::Vec;
+
 /// A wrapper around a set of bytes representing an ACPI table.
 ///
 /// This structure supports three different data layouts for ACPI tables:
@@ -18,13 +20,16 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 ///   instantiation requiring, at a minimum, a valid ACPI table header with no way to remove bytes other than those
 ///   used to store elements of a `Dst` style ACPI table.
 pub struct Table<T: AcpiTable + ?Sized> {
-    pub(crate) data: Vec<u8>,
+    pub(crate) _data: Vec<u8>,
     pub(crate) _marker: core::marker::PhantomData<T>,
 }
 
-impl <T: AcpiTable + ?Sized> Table<T> {
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.data
+impl<T: AcpiTable + ?Sized> TryFrom<Vec<u8>> for Table<T> {
+    type Error = crate::error::AcpiError;
+
+    fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+        // TODO: Run it through a `ref_from_bytes`
+        Ok(Self { _data: value, _marker: core::marker::PhantomData })
     }
 }
 
@@ -45,9 +50,9 @@ impl<E: IntoBytes + FromBytes + Immutable + KnownLayout + Unaligned> Element for
 }
 
 /// TODO
-/// 
+///
 /// ## SAFETY
-/// 
+///
 /// - TODO
 pub unsafe trait AcpiTable: FromBytes + IntoBytes + KnownLayout + Unaligned + Immutable {
     /// The ACPI table signature.
