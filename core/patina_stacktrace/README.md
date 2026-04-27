@@ -8,9 +8,7 @@ machine state. It currently does not resolve symbols because PDB debug
 information is not embedded in the PE image, unlike DWARF data in ELF images.
 Therefore, symbol resolution must be performed offline. As a result, the "Call
 Site" column in the output displays `module+<relative pc>` instead of
-`module!function+<relative pc>`. Outside of this library, with PDB access,
-those module-relative PC offsets can be resolved to function-relative offsets,
-as shown below.
+`module!function+<relative pc>`.
 
 ```cmd
 C:\> .\resolve_stacktrace.cmd
