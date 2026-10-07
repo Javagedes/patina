@@ -46,6 +46,7 @@ patina_mm = { version = "23.3.0", path = "components/patina_mm" }
 patina_mtrr = { version = "2" }
 patina_paging = { version = "11.1.1" }
 patina_performance = { version = "23.3.0", path = "components/patina_performance" }
+patina_sbom = { version = "23.3.0", path = "components/patina_sbom" }
 patina_smbios = { version = "23.3.0", path = "components/patina_smbios" }
 patina_stacktrace = { version = "23.3.0", path = "core/patina_stacktrace" }
 patina_test = { version = "23.3.0", path = "components/patina_test" }

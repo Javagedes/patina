@@ -13,6 +13,8 @@
 
 use crate::BinaryGuid;
 
+pub mod sbom;
+
 /// Define a binding between an Interface and the corresponding Guid
 ///
 /// # Safety

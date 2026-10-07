@@ -42,6 +42,7 @@
 //! SPDX-License-Identifier: Apache-2.0
 //!
 
+pub mod acpi;
 pub mod config_table;
 pub mod driver;
 pub mod event;

@@ -1,0 +1,29 @@
+[package]
+name = "patina_sbom"
+version.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+readme = "README.md"
+description = "Software Bill of Materials ACPI table collection and publication."
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+log = { workspace = true }
+mockall = { workspace = true, optional = true }
+patina = { workspace = true, features = ["alloc"] }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+patina = { workspace = true, features = ["alloc", "mockall"] }
+
+[features]
+mockall = ["dep:mockall", "std"]
+std = []
+# All non-std features to test in CI
+ci_features = []

@@ -18,6 +18,7 @@ use core::{
 use patina::standard::efi::{self, protocols::device_path::Protocol};
 use patina::{
     Char16Str,
+    acpi::SbomTableEntry,
     component::service::memory::{AllocationOptions, MemoryManager, PageFree},
     component::service::uefi_services::image::ImageError,
     error::EfiError,
@@ -27,6 +28,7 @@ use patina::{
         fw_fs::FfsSectionRawType::PE32,
         hob::{Hob, HobList},
     },
+    protocol::{ProtocolInterface, sbom::SbomProtocol},
     uefi::device_path::walker::{DevicePathWalker, copy_device_path_to_boxed_slice, device_path_node_count},
     uefi::memory::EfiMemoryType,
     uefi_size_to_pages, {DEFAULT_CACHE_ATTR, UEFI_PAGE_SIZE, align_up},
@@ -78,6 +80,7 @@ struct PrivateImageData {
     image_buffer: Buffer,
     image_info: Box<efi::protocols::loaded_image::Protocol>,
     hii_resource_section: Option<Box<[u8], PageFree>>,
+    sbom_section: Option<Box<[u8]>>,
     entry_point: efi::ImageEntryPoint,
     started: bool,
     exit_data: Option<ExitData>,
@@ -114,6 +117,7 @@ impl PrivateImageData {
             image_buffer: Buffer::Owned(bytes),
             image_info: Box::new(image_info),
             hii_resource_section: None,
+            sbom_section: None,
             entry_point: unimplemented_entry_point,
             started: false,
             exit_data: None,
@@ -136,6 +140,7 @@ impl PrivateImageData {
             image_buffer: Buffer::Borrowed(image_buffer),
             image_info: Box::new(image_info),
             hii_resource_section: None,
+            sbom_section: None,
             entry_point,
             started: true,
             exit_data: None,
@@ -185,6 +190,35 @@ impl PrivateImageData {
 
         self.hii_resource_section = Some(bytes);
         Ok(())
+    }
+
+    /// Locates and copies the optional `.sbom` section from the source image.
+    fn load_sbom_section(&mut self, image: &[u8]) {
+        let section = match pecoff::get_section(".sbom", &self.pe_info, image) {
+            Ok(Some(section)) => section,
+            Ok(None) => return,
+            Err(err) => {
+                let pe_file_name = self.pe_info.filename_or("Unknown");
+                log::warn!("Ignoring {pe_file_name} .sbom section that could not be read: {err:?}");
+                return;
+            }
+        };
+
+        let (_, remaining) = match SbomTableEntry::parse_prefix(section) {
+            Ok(entry) => entry,
+            Err(err) => {
+                let pe_file_name = self.pe_info.filename_or("Unknown");
+                log::warn!("Ignoring invalid .sbom entry in {pe_file_name}: {err}");
+                return;
+            }
+        };
+        if !remaining.is_empty() {
+            let pe_file_name = self.pe_info.filename_or("Unknown");
+            log::warn!("Ignoring .sbom entry with trailing bytes in {pe_file_name}");
+            return;
+        }
+
+        self.sbom_section = Some(section.to_vec().into_boxed_slice());
     }
 
     /// Loads the image into memory from the provided buffer, accounting for section virtual addresses and size.
@@ -257,6 +291,14 @@ impl PrivateImageData {
             )?;
         }
 
+        if let Some(sbom_section) = &self.sbom_section {
+            core_install_protocol_interface(
+                Some(handle),
+                <SbomProtocol as ProtocolInterface>::PROTOCOL_GUID.into_inner(),
+                sbom_section.as_ptr().cast_mut().cast::<c_void>(),
+            )?;
+        }
+
         if self.pe_info.image_type == EFI_IMAGE_SUBSYSTEM_EFI_RUNTIME_DRIVER {
             runtime::add_runtime_image(
                 self.image_info.image_base,
@@ -307,6 +349,18 @@ impl PrivateImageData {
             && !matches!(err, EfiError::NotFound | EfiError::InvalidParameter)
         {
             log::warn!("Failed to uninstall HII package list protocol for handle {handle:?}: {err}");
+            result = Err(err);
+        }
+
+        if let Some(sbom_section) = &self.sbom_section
+            && let Err(err) = core_uninstall_protocol_interface(
+                handle,
+                <SbomProtocol as ProtocolInterface>::PROTOCOL_GUID.into_inner(),
+                sbom_section.as_ptr().cast_mut().cast::<c_void>(),
+            )
+            && !matches!(err, EfiError::NotFound | EfiError::InvalidParameter)
+        {
+            log::warn!("Failed to uninstall SBOM protocol for handle {handle:?}: {err}");
             result = Err(err);
         }
 
@@ -1430,6 +1484,8 @@ fn core_load_pe_image(
     private_info.relocate_image()?;
 
     private_info.load_resource_section(image)?;
+
+    private_info.load_sbom_section(image);
 
     // If we are not NX compatible and a EFI Application, we need to attempt to activate compatibility mode.
     // Compatability mode may or may not actually activate depending on how we are configured.
@@ -2839,6 +2895,7 @@ mod tests {
                 image_buffer: bytes,
                 image_info: Box::new(image_info),
                 hii_resource_section: None,
+                sbom_section: None,
                 entry_point: dummy_entry,
                 started: false,
                 exit_data: None,
@@ -3197,6 +3254,112 @@ mod tests {
             image_data.uninstall(handle).expect("partially installed image should uninstall");
             assert_eq!(PROTOCOL_DB.validate_handle(handle), Err(EfiError::InvalidParameter));
         });
+    }
+
+    #[test]
+    fn test_private_image_data_publishes_embedded_sbom_protocol() {
+        with_locked_state(|| {
+            let expected_payload = include_bytes!("../../resources/test/pe32/sbom_section.bin");
+            let mut entry = vec![patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_REVISION];
+            entry.extend_from_slice(&patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_HEADER_LENGTH.to_le_bytes());
+            entry.extend_from_slice(&(expected_payload.len() as u32).to_le_bytes());
+            entry.push(patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_FLAG_NONE);
+            entry.push(patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_SBOM_FORMAT_COSWID);
+            entry.push(patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_SBOM_COMPRESSION_NONE);
+            entry.extend_from_slice(expected_payload);
+            let image = Box::leak(entry.into_boxed_slice());
+
+            let mut pe_info = UefiPeInfo::default();
+            pe_info.sections.push(goblin::pe::section_table::SectionTable {
+                name: *b".sbom\0\0\0",
+                virtual_size: image.len() as u32,
+                size_of_raw_data: image.len() as u32,
+                pointer_to_raw_data: 0,
+                ..Default::default()
+            });
+            let mut image_data =
+                PrivateImageData::new_from_static_image(empty_image_info(), image, unimplemented_entry_point, &pe_info);
+
+            image_data.load_sbom_section(image);
+            let sbom_section = image_data.sbom_section.as_ref().expect("SBOM section should be retained by the image");
+            assert_ne!(sbom_section.as_ptr(), image.as_ptr(), "SBOM entry should be copied");
+            assert_eq!(sbom_section.as_ref(), image);
+
+            let handle = image_data.install().expect("image protocols should install");
+            let interface = PROTOCOL_DB
+                .get_interface_for_handle(handle, <SbomProtocol as ProtocolInterface>::PROTOCOL_GUID.into_inner())
+                .expect("SBOM protocol should be installed on the image handle");
+            assert_eq!(interface, sbom_section.as_ptr().cast_mut().cast::<c_void>());
+
+            // SAFETY: The protocol interface is the first byte of the complete entry owned by `image_data`.
+            let entry_bytes = unsafe { core::slice::from_raw_parts(interface.cast::<u8>(), sbom_section.len()) };
+            let (entry, remaining) = SbomTableEntry::parse_prefix(entry_bytes).expect("protocol entry should parse");
+            assert!(remaining.is_empty());
+            assert_eq!(entry.payload(), expected_payload);
+
+            image_data.uninstall(handle).expect("image protocols should uninstall");
+            assert!(
+                PROTOCOL_DB
+                    .get_interface_for_handle(handle, <SbomProtocol as ProtocolInterface>::PROTOCOL_GUID.into_inner())
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn test_private_image_data_ignores_sbom_section_without_entry_header() {
+        let image = include_bytes!("../../resources/test/pe32/test_image_with_sbom_section.bin");
+        let pe_info = UefiPeInfo::parse(image).expect("SBOM test image should parse");
+        let mut image_data =
+            PrivateImageData::new_from_static_image(empty_image_info(), image, unimplemented_entry_point, &pe_info);
+
+        image_data.load_sbom_section(image);
+        assert!(image_data.sbom_section.is_none());
+    }
+
+    #[test]
+    fn test_private_image_data_ignores_unreadable_sbom_section() {
+        let image = Box::leak(vec![0u8; 16].into_boxed_slice());
+        let mut pe_info = UefiPeInfo::default();
+        pe_info.sections.push(goblin::pe::section_table::SectionTable {
+            name: *b".sbom\0\0\0",
+            virtual_size: 16,
+            size_of_raw_data: 16,
+            pointer_to_raw_data: 8,
+            ..Default::default()
+        });
+        let mut image_data =
+            PrivateImageData::new_from_static_image(empty_image_info(), image, unimplemented_entry_point, &pe_info);
+
+        image_data.load_sbom_section(image);
+        assert!(image_data.sbom_section.is_none());
+    }
+
+    #[test]
+    fn test_private_image_data_ignores_sbom_entry_with_trailing_bytes() {
+        let mut section = vec![patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_REVISION];
+        section.extend_from_slice(&patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_HEADER_LENGTH.to_le_bytes());
+        section.extend_from_slice(&0u32.to_le_bytes());
+        section.extend_from_slice(&[
+            patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_FLAG_NONE,
+            patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_SBOM_FORMAT_COSWID,
+            patina::acpi::EFI_ACPI_SBOM_TABLE_ENTRY_SBOM_COMPRESSION_NONE,
+            0xFF,
+        ]);
+        let image = Box::leak(section.into_boxed_slice());
+        let mut pe_info = UefiPeInfo::default();
+        pe_info.sections.push(goblin::pe::section_table::SectionTable {
+            name: *b".sbom\0\0\0",
+            virtual_size: image.len() as u32,
+            size_of_raw_data: image.len() as u32,
+            pointer_to_raw_data: 0,
+            ..Default::default()
+        });
+        let mut image_data =
+            PrivateImageData::new_from_static_image(empty_image_info(), image, unimplemented_entry_point, &pe_info);
+
+        image_data.load_sbom_section(image);
+        assert!(image_data.sbom_section.is_none());
     }
 
     #[test]

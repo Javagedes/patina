@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use patina::{
-    component::{Storage, component},
+    component::{Storage, component, params::Commands, service::IntoService},
     uefi::boot_services::{BootServices, StandardBootServices},
     uefi_size_to_pages,
 };
@@ -25,9 +25,11 @@ use patina::{
 use patina::{
     component::{
         hob::Hob,
+        params::Config,
         service::{Service, memory::MemoryManager},
     },
     error::EfiError,
+    oem::OemInfo,
     uefi::memory::EfiMemoryType,
 };
 
@@ -42,30 +44,27 @@ use crate::{
 
 /// Initializes the ACPI provider service.
 #[derive(Default)]
-pub struct AcpiComponent {
-    /// Platform vendor.
-    pub oem_id: [u8; 6],
-    /// Product variant for platform vendor.
-    pub oem_table_id: [u8; 8],
-    /// Platform edition (OEM-defined). Not to be confused with ACPI revision.
-    pub oem_revision: u32,
-    /// ID of compiler used to generate the ACPI table.
-    pub creator_id: u32,
-    /// Version of the tool used to generate the ACPI table.
-    pub creator_revision: u32,
+pub struct AcpiComponent;
+
+struct AcpiServices {
+    memory_manager: Service<dyn MemoryManager>,
+}
+
+impl IntoService for AcpiServices {
+    fn register(self, storage: &mut Storage) {
+        storage.add_service(&STANDARD_ACPI_PROVIDER);
+        let acpi_provider = storage
+            .get_service::<dyn AcpiProvider>()
+            .expect("ACPI provider was registered immediately before constructing the table manager");
+        storage.add_service(AcpiTableManager { provider_service: acpi_provider, memory_manager: self.memory_manager });
+    }
 }
 
 #[component]
 impl AcpiComponent {
     /// Initializes a new `AcpiComponent`.
-    pub fn new(
-        oem_id: [u8; 6],
-        oem_table_id: [u8; 8],
-        oem_revision: u32,
-        creator_id: u32,
-        creator_revision: u32,
-    ) -> Self {
-        Self { oem_id, oem_table_id, oem_revision, creator_id, creator_revision }
+    pub const fn new() -> Self {
+        Self
     }
 
     /// Initializes the ACPI system.
@@ -73,11 +72,14 @@ impl AcpiComponent {
     #[cfg_attr(coverage, coverage(off))]
     fn entry_point(
         self,
-        storage: &mut Storage,
+        oem_info: Config<OemInfo>,
         boot_services: StandardBootServices,
         acpi_hob: Option<Hob<AcpiMemoryHob>>,
         memory_manager: Service<dyn MemoryManager>,
+        mut commands: Commands,
     ) -> patina::error::Result<()> {
+        let oem_info = *oem_info;
+
         // Produce the EDKII ACPI protocol interfaces.
         boot_services.install_protocol_interface(None, Box::new(AcpiTableProtocol::new()))?;
         boot_services.install_protocol_interface(None, Box::new(AcpiGetProtocol::new()))?;
@@ -109,11 +111,11 @@ impl AcpiComponent {
                 length: ACPI_HEADER_LEN as u32, // XSDT starts off with no entries
                 revision: ACPI_XSDT_REVISION,
                 checksum: 0,
-                oem_id: self.oem_id,
-                oem_table_id: self.oem_table_id,
-                oem_revision: self.oem_revision,
-                creator_id: self.creator_id,
-                creator_revision: self.creator_revision,
+                oem_id: oem_info.oem_id,
+                oem_table_id: oem_info.oem_table_id,
+                oem_revision: oem_info.oem_revision,
+                creator_id: oem_info.creator_id,
+                creator_revision: oem_info.creator_revision,
             },
         };
 
@@ -135,7 +137,7 @@ impl AcpiComponent {
         let rsdp_data = AcpiRsdp {
             signature: signature::ACPI_RSDP_TABLE,
             checksum: 0,
-            oem_id: self.oem_id,
+            oem_id: oem_info.oem_id,
             revision: ACPI_RSDP_REVISION,
             _rsdt_address: 0,
             length: mem::size_of::<AcpiRsdp>() as u32, // RSDP size is fixed for ACPI 2.0+.
@@ -179,15 +181,7 @@ impl AcpiComponent {
             let _ = STANDARD_ACPI_PROVIDER.install_tables_from_hob(acpi_guid_hob);
         }
 
-        storage.add_service(&STANDARD_ACPI_PROVIDER);
-
-        // Set up the generic wrapper service for ACPI table management.
-        // This allows installation of generic ACPI tables; i.e. install_acpi_table<T>.
-        let acpi_provider = storage.get_service::<dyn AcpiProvider>().ok_or(EfiError::NotStarted)?;
-        let acpi_service = AcpiTableManager { provider_service: acpi_provider, memory_manager };
-        // Register the ACPI table manager service.
-        // Consumers of ACPI table management should use this service rather than the provider directly.
-        storage.add_service(acpi_service);
+        commands.add_service(AcpiServices { memory_manager });
 
         log::trace!("ACPI Provider initialized.");
 
