@@ -73,7 +73,10 @@ case "${FUZZ_MODE}" in
     *) echo "error: FUZZ_MODE must be 'test' or 'release', not '${FUZZ_MODE}'" >&2; exit 1 ;;
 esac
 
-cargo fuzz build ${mode_flag[@]+"${mode_flag[@]}"} ${args[@]+"${args[@]}"}
+# Build for the host. The prebuilt cargo-fuzz that CI installs defaults to a musl target, which cannot use sanitizers.
+target_flag=(--target "$(rustc -vV | sed -n 's/^host: //p')")
+
+cargo fuzz build ${target_flag[@]+"${target_flag[@]}"} ${mode_flag[@]+"${mode_flag[@]}"} ${args[@]+"${args[@]}"}
 '''
 
 [tasks.fuzz]
@@ -131,7 +134,10 @@ if [ -f "seeds/${area}.txt" ]; then
 fi
 
 echo "Fuzzing ${target} for ${FUZZ_SECONDS} seconds (${FUZZ_MODE} build)"
-cargo fuzz run ${mode_flag[@]+"${mode_flag[@]}"} "${target}" "${corpus}" ${seed_dirs[@]+"${seed_dirs[@]}"} -- \
+# Build for the host. The prebuilt cargo-fuzz that CI installs defaults to a musl target, which cannot use sanitizers.
+target_flag=(--target "$(rustc -vV | sed -n 's/^host: //p')")
+
+cargo fuzz run ${target_flag[@]+"${target_flag[@]}"} ${mode_flag[@]+"${mode_flag[@]}"} "${target}" "${corpus}" ${seed_dirs[@]+"${seed_dirs[@]}"} -- \
     "-max_total_time=${FUZZ_SECONDS}" \
     "-max_len=${FUZZ_MAX_LEN}" \
     "-timeout=30" \
@@ -166,7 +172,10 @@ case "${FUZZ_MODE}" in
 esac
 
 # RUST_BACKTRACE gives the panic's stack trace, which the sanitizer cannot symbolize for Rust panics.
-RUST_BACKTRACE=1 cargo fuzz run ${mode_flag[@]+"${mode_flag[@]}"} "${args[0]}" "${args[1]}"
+# Build for the host. The prebuilt cargo-fuzz that CI installs defaults to a musl target, which cannot use sanitizers.
+target_flag=(--target "$(rustc -vV | sed -n 's/^host: //p')")
+
+RUST_BACKTRACE=1 cargo fuzz run ${target_flag[@]+"${target_flag[@]}"} ${mode_flag[@]+"${mode_flag[@]}"} "${args[0]}" "${args[1]}"
 '''
 
 [tasks.minimize]
@@ -193,5 +202,8 @@ case "${FUZZ_MODE}" in
     *) echo "error: FUZZ_MODE must be 'test' or 'release', not '${FUZZ_MODE}'" >&2; exit 1 ;;
 esac
 
-cargo fuzz cmin ${mode_flag[@]+"${mode_flag[@]}"} "${args[0]}"
+# Build for the host. The prebuilt cargo-fuzz that CI installs defaults to a musl target, which cannot use sanitizers.
+target_flag=(--target "$(rustc -vV | sed -n 's/^host: //p')")
+
+cargo fuzz cmin ${target_flag[@]+"${target_flag[@]}"} ${mode_flag[@]+"${mode_flag[@]}"} "${args[0]}"
 '''
