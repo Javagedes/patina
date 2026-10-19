@@ -127,7 +127,7 @@ pub(super) fn prepare(pages: &mut [u8]) -> Result<(), EfiError> {
     let exception_entry = code + stub_exception_offset();
     let idt_entry = IdtEntry::interrupt_gate(exception_entry as u64, CODE_SELECTOR, 0);
     let idt_page = page_mut(pages, IDT_PAGE_INDEX)?;
-    for entry in idt_page.chunks_exact_mut(core::mem::size_of::<IdtEntry>()) {
+    for entry in idt_page.as_chunks_mut::<{ core::mem::size_of::<IdtEntry>() }>().0 {
         // SAFETY: The page base and each entry-sized offset are aligned for `IdtEntry`.
         unsafe { entry.as_mut_ptr().cast::<IdtEntry>().write(idt_entry) };
     }

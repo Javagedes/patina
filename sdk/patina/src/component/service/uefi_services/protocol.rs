@@ -19,8 +19,7 @@
 //!
 //! - [`with_protocol`](ProtocolServicesExt::with_protocol) - Run a closure with the interface.
 //!   Useful for a single, immediate use. The reference cannot escape the closure.
-//! - [`open_protocol`](ProtocolServicesExt::open_protocol) - A [`ProtocolGuard`] that dereferences
-//!   to the interface for a block scope. Useful when several statements need the interface. Acts
+//! - [`with_protocol_on`](ProtocolServicesExt::with_protocol_on) - Like `with_protocol`, but acts
 //!   on a specific handle, obtained with [`locate_first_handle`](ProtocolServicesExt::locate_first_handle)
 //!   or [`locate_handles_for`](ProtocolServicesExt::locate_handles_for).
 //! - [`locate_token`](ProtocolServicesExt::locate_token) - A [`ProtocolToken`] that stores
@@ -146,25 +145,6 @@ impl NotifyRegistration {
     }
 }
 
-/// A view of a protocol interface on a specific handle.
-///
-/// Returned by [`ProtocolServicesExt::open_protocol`]. It dereferences to the protocol interface
-/// and ties that reference to the borrow of the service, so the reference cannot escape the scope
-/// in which access is held. For access that must persist across dispatch, store a [`ProtocolToken`]
-/// instead.
-#[must_use]
-pub struct ProtocolGuard<'a, P: ProtocolInterface> {
-    interface: &'a P,
-}
-
-impl<P: ProtocolInterface> core::ops::Deref for ProtocolGuard<'_, P> {
-    type Target = P;
-
-    fn deref(&self) -> &P {
-        self.interface
-    }
-}
-
 /// A revocable reference to a protocol interface on a specific handle.
 ///
 /// Unlike a `&P`, a token never dangles. It only stores a handle, so it is safe to keep for the
@@ -206,6 +186,7 @@ impl<P: ProtocolInterface> Clone for ProtocolToken<P> {
 impl<P: ProtocolInterface> Copy for ProtocolToken<P> {}
 
 /// Errors that can occur when using [`ProtocolServices`].
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum ProtocolError {
     /// A provided parameter was invalid.
@@ -533,9 +514,8 @@ pub trait ProtocolServicesExt: ProtocolServices {
 
     /// Locates the first handle with protocol `P` installed.
     ///
-    /// Useful for obtaining a [`Handle`] to pass to [`Self::open_protocol`] or
-    /// [`Self::with_protocol_on`], which act on a specific handle rather than any installed
-    /// interface.
+    /// Useful for obtaining a [`Handle`] to pass to [`Self::with_protocol_on`], which acts on a
+    /// specific handle rather than any installed interface.
     ///
     /// # Errors
     ///
@@ -574,22 +554,6 @@ pub trait ProtocolServicesExt: ProtocolServices {
         // SAFETY: as in `with_protocol`.
         let interface = unsafe { &*(ptr.as_raw() as *const P) };
         Ok(f(interface))
-    }
-
-    /// Opens protocol `P` on `handle`, returning a [`ProtocolGuard`] for block-scoped access.
-    ///
-    /// The guard dereferences to the interface and keeps the reference tied to this service borrow.
-    /// Use it when several statements need the interface. For one expression prefer [`Self::with_protocol_on`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::NotFound`] if `handle` does not have `P` installed.
-    fn open_protocol<P: ProtocolInterface>(&self, handle: Handle) -> Result<ProtocolGuard<'_, P>, ProtocolError> {
-        let ptr = self.interface_on_handle(handle, P::PROTOCOL_GUID)?;
-        // SAFETY: as in `with_protocol`. The reference is bound to `&self`, so it cannot outlive
-        // the borrow of the service.
-        let interface = unsafe { &*(ptr.as_raw() as *const P) };
-        Ok(ProtocolGuard { interface })
     }
 
     /// Locates the first handle with protocol `P` and returns a [`ProtocolToken`].
@@ -835,15 +799,15 @@ mod tests {
     }
 
     #[test]
-    fn test_protocol_services_ext_open_protocol() {
+    fn test_protocol_services_ext_with_protocol_on() {
         let mut mock = MockProtocolServices::new();
         mock.expect_interface_on_handle().times(1).returning(|_, guid| {
             assert_eq!(guid, FakeProtocol::PROTOCOL_GUID);
             Ok(fake_ptr())
         });
 
-        let guard = mock.open_protocol::<FakeProtocol>(fake_handle()).unwrap();
-        assert_eq!(guard.value, 42);
+        let value = mock.with_protocol_on::<FakeProtocol, _>(fake_handle(), |p| p.value).unwrap();
+        assert_eq!(value, 42);
     }
 
     #[test]

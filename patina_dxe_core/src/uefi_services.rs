@@ -14,7 +14,6 @@
 //!
 
 mod config_table;
-mod driver;
 mod event;
 mod image;
 mod protocol;
@@ -24,7 +23,6 @@ mod timing;
 mod tpl;
 
 pub(crate) use config_table::CoreConfigurationTableServices;
-pub(crate) use driver::CoreDriverServices;
 pub(crate) use event::CoreEventServices;
 pub(crate) use image::CoreImageServices;
 pub(crate) use protocol::CoreProtocolServices;

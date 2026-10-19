@@ -158,7 +158,7 @@ fn test_mm_supervisor_invalid_signature() {
 
     // Create request with invalid signature using safe operations
     let invalid_request = MmSupervisorRequestHeader {
-        signature: u32::from_le_bytes([b'I', b'N', b'V', b'D']), // Invalid signature
+        signature: u32::from_le_bytes(*b"INVD"), // Invalid signature
         revision: mm_supervisor_request::REVISION,
         request: RequestType::VersionInfo.into(),
         reserved: 0,

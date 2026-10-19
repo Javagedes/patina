@@ -352,7 +352,7 @@ mod tests {
 
                 assert_eq!(mat.version, efi::MEMORY_ATTRIBUTES_TABLE_VERSION);
                 // we have one extra entry here because init_system_table allocates runtime pages
-                assert!(mat.number_of_entries == entry_count as u32 + 1);
+                assert_eq!(mat.number_of_entries, entry_count as u32 + 1);
                 assert_eq!(mat.descriptor_size, size_of::<efi::MemoryDescriptor>() as u32);
 
                 let entry_slice = slice::from_raw_parts(mat.entry.as_ptr(), mat.number_of_entries as usize);

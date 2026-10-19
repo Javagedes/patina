@@ -655,8 +655,10 @@ impl StandardAcpiProvider {
                 .ok_or(AcpiError::XsdtOverflow)?;
             // Look for the corresponding entry.
             let index_opt: Option<usize> = entries_bytes
-                .chunks_exact(ACPI_XSDT_ENTRY_SIZE)
-                .position(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()) == table_address);
+                .as_chunks::<ACPI_XSDT_ENTRY_SIZE>()
+                .0
+                .iter()
+                .position(|chunk| u64::from_le_bytes(*chunk) == table_address);
 
             if let Some(idx) = index_opt {
                 let start_idx = ACPI_HEADER_LEN + idx * ACPI_XSDT_ENTRY_SIZE; // Find where the target entry starts.

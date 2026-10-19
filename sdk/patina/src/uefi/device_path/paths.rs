@@ -365,7 +365,7 @@ impl Display for DevicePath {
         let mut nodes = self.iter().map(node_defs::cast_to_dyn_device_path_node).peekable();
 
         while let Some(node) = nodes.next() {
-            f.write_fmt(format_args!("{}", &node))?;
+            f.write_fmt(format_args!("{node}"))?;
 
             if let Some(next) = nodes.peek()
                 && node.header().r#type != DevicePathType::End as u8

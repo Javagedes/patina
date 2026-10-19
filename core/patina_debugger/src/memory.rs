@@ -242,7 +242,7 @@ mod tests {
         mock_page_table.expect_query_memory_region().once().returning(|_, _| Ok(MemoryAttributes::empty()));
 
         let result = check_paging_range(&mock_page_table, 0, 0x1000);
-        assert!(result.expect("Failed to check range access.") == 0x1000);
+        assert_eq!(result.expect("Failed to check range access."), 0x1000);
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         mock_page_table.expect_query_memory_region().times(4).returning(|_, _| Ok(MemoryAttributes::empty()));
 
         let result = check_paging_range(&mock_page_table, 0x800, 0x3000);
-        assert!(result.expect("Failed to check range access.") == 0x3000);
+        assert_eq!(result.expect("Failed to check range access."), 0x3000);
     }
 
     #[test]
@@ -278,7 +278,7 @@ mod tests {
             .returning(|_, _| Err((PagingError::InvalidMemoryRange, None)));
 
         let result = check_paging_range(&mock_page_table, 0x800, 0x3000);
-        assert!(result.expect("Failed to check range access.") == 0x1800);
+        assert_eq!(result.expect("Failed to check range access."), 0x1800);
     }
 
     // This is an artifact of having to mock something that relies on static
@@ -302,7 +302,7 @@ mod tests {
 
         let address = &raw const data as u64;
         let result = read_memory::<MockMemDebuggerArch>(address, &mut buffer, false);
-        assert!(result.expect("Failed to read memory.") == buffer.len());
+        assert_eq!(result.expect("Failed to read memory."), buffer.len());
         assert_eq!(buffer, data);
     }
 

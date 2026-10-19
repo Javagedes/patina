@@ -4,7 +4,7 @@
 - **Cadence:** Update at least once per quarter. Do not jump to a new stable release the day it ships.
 - **Toolchain are specified in:** `rust-toolchain.toml` (stable channel) and the `rust-version` field in each crate's
   `Cargo.toml`.
-- **Stable selection:** Pin the explicit stable release version (for example, `channel = "1.95.0"`) in
+- **Stable selection:** Pin the explicit stable release version (for example, `channel = "1.99.1"`) in
   `rust-toolchain.toml`.
 - **Unstable features:** The pinned stable toolchain builds the unstable feature gates Patina uses via
   `RUSTC_BOOTSTRAP=1`, set in the `[env]` table of `.cargo/config.toml`. See
@@ -75,7 +75,7 @@ Pin the explicit stable release in `rust-toolchain.toml`:
 
 ```toml
 [toolchain]
-channel = "1.95.0"
+channel = "1.99.1"
 ```
 
 Use an explicit version rather than the floating `stable` channel so builds stay reproducible and each toolchain move is

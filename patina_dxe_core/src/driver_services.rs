@@ -2119,8 +2119,8 @@ mod tests {
 
             let boot_services = st.boot_services().get();
 
-            assert!(boot_services.connect_controller as usize == connect_controller as *const () as usize);
-            assert!(boot_services.disconnect_controller as usize == disconnect_controller as *const () as usize);
+            assert_eq!(boot_services.connect_controller as usize, connect_controller as *const () as usize);
+            assert_eq!(boot_services.disconnect_controller as usize, disconnect_controller as *const () as usize);
         });
     }
 }

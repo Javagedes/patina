@@ -104,13 +104,9 @@ pub fn core_uninstall_protocol_interface(
     log::info!("UninstallProtocolInterface: {:?} @ {:#x?}", OwnedGuid::from(protocol), interface);
 
     // Check if the handle/protocol/interface triple is legitimate
-    match PROTOCOL_DB.get_interface_for_handle(handle, protocol) {
-        Err(err) => return Err(err),
-        Ok(found_interface) => {
-            if found_interface != interface {
-                return Err(EfiError::NotFound);
-            }
-        }
+    let found_interface = PROTOCOL_DB.get_interface_for_handle(handle, protocol)?;
+    if found_interface != interface {
+        return Err(EfiError::NotFound);
     }
 
     //attempt to close all OPEN_BY_DRIVER usages.
@@ -594,6 +590,21 @@ unsafe extern "efiapi" fn open_protocol_information(
     }
 }
 
+// `VaList::arg` was renamed to `next_arg` when `c_variadic` was stabilized in Rust 1.99.
+#[rustversion::since(1.99)]
+macro_rules! va_arg {
+    ($args:expr) => {
+        $args.next_arg()
+    };
+}
+
+#[rustversion::before(1.99)]
+macro_rules! va_arg {
+    ($args:expr) => {
+        $args.arg()
+    };
+}
+
 /// # Safety
 ///
 /// `handle` must be a valid pointer to an `efi::Handle` (may point to a null handle for new
@@ -617,12 +628,12 @@ unsafe extern "C" fn install_multiple_protocol_interfaces(handle: *mut efi::Hand
     loop {
         //consume the protocol, break the loop if it is null.
         // SAFETY: Variadic argument list is controlled by the caller and accessed in order.
-        let protocol: *mut efi::Guid = unsafe { args.arg() };
+        let protocol: *mut efi::Guid = unsafe { va_arg!(args) };
         if protocol.is_null() {
             break;
         }
         // SAFETY: Variadic argument list is controlled by the caller and accessed in order.
-        let interface: *mut c_void = unsafe { args.arg() };
+        let interface: *mut c_void = unsafe { va_arg!(args) };
         // SAFETY: protocol is checked for null above before dereferencing.
         //         The caller-supplied pointer may be unaligned.
         if unsafe { protocol.read_unaligned() } == efi::protocols::device_path::PROTOCOL_GUID
@@ -682,12 +693,12 @@ unsafe extern "C" fn uninstall_multiple_protocol_interfaces(handle: efi::Handle,
     let mut interfaces_to_uninstall = Vec::new();
     loop {
         // SAFETY: Variadic argument list is controlled by the caller and accessed in order.
-        let protocol: *mut efi::Guid = unsafe { args.arg() };
+        let protocol: *mut efi::Guid = unsafe { va_arg!(args) };
         if protocol.is_null() {
             break;
         }
         // SAFETY: Variadic argument list is controlled by the caller and accessed in order.
-        let interface: *mut c_void = unsafe { args.arg() };
+        let interface: *mut c_void = unsafe { va_arg!(args) };
         interfaces_to_uninstall.push((protocol, interface));
     }
 

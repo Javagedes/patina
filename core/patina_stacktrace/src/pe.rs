@@ -174,7 +174,9 @@ impl PE<'_> {
         // of type IMAGE_DEBUG_TYPE_CODEVIEW (2), and extract the debug data RVA
         // and its size. A trailing partial entry is discarded.
         let (debug_data_rva, debug_data_size) = debug_directory
-            .chunks_exact(DEBUG_DIRECTORY_ENTRY_SIZE)
+            .as_chunks::<DEBUG_DIRECTORY_ENTRY_SIZE>()
+            .0
+            .iter()
             .filter(|&bytes| {
                 let debug_record_type = bytes.read32(DEBUG_RECORD_TYPE_OFFSET).unwrap_or(0);
                 debug_record_type == DEBUG_RECORD_TYPE_CODEVIEW

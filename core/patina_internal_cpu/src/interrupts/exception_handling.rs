@@ -137,13 +137,13 @@ mod tests {
 
     impl crate::interrupts::InterruptHandler for TestHandler {
         fn handle_interrupt(&'static self, exception_type: usize, _context: &mut ExceptionContext) {
-            assert!(exception_type == HANDLER_EXCEPTION);
+            assert_eq!(exception_type, HANDLER_EXCEPTION);
             self.invoked.store(true, core::sync::atomic::Ordering::SeqCst);
         }
     }
 
     extern "efiapi" fn test_callback(exception_type: EfiExceptionType, _context: EfiSystemContext) {
-        assert!(exception_type == CALLBACK_EXCEPTION.cast_signed());
+        assert_eq!(exception_type, CALLBACK_EXCEPTION.cast_signed());
         // SAFETY: This is a test only static mutable variable.
         unsafe { CALLBACK_INVOKED = true };
     }

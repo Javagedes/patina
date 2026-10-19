@@ -100,7 +100,7 @@ impl MemoryBlock {
         }
 
         if self.start() == start && end < self.end() {
-            let mut next = MemoryBlock::clone(self);
+            let mut next = *self;
 
             self.as_mut().base_address = base_address as u64;
             self.as_mut().length = len as u64;
@@ -111,7 +111,7 @@ impl MemoryBlock {
         }
 
         if self.start() < start && end == self.end() {
-            let mut next = MemoryBlock::clone(self);
+            let mut next = *self;
 
             self.as_mut().length -= len as u64;
             next.as_mut().base_address = base_address as u64;
@@ -121,8 +121,8 @@ impl MemoryBlock {
         }
 
         if self.start() < start && end < self.end() {
-            let mut next = MemoryBlock::clone(self);
-            let mut last = MemoryBlock::clone(self);
+            let mut next = *self;
+            let mut last = *self;
 
             self.as_mut().length = (start - self.start()) as u64;
             next.as_mut().base_address = base_address as u64;

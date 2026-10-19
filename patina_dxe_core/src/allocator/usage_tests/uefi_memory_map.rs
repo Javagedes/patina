@@ -29,7 +29,7 @@
 //! RUST_LOG=info cargo test --lib -p patina_dxe_core allocator::usage_tests::uefi_memory_map -- --nocapture
 //! ```
 //!
-//! PowerShell example:
+//! `PowerShell` example:
 //!
 //! ```powershell
 //! $env:RUST_LOG="info"; cargo test --lib -p patina_dxe_core allocator::usage_tests::uefi_memory_map -- --nocapture

@@ -21,7 +21,7 @@ use crate::standard::{
 use core::ffi::c_void;
 
 /// MMST signature: `'S', 'M', 'S', 'T'` (same as C `MM_MMST_SIGNATURE`).
-pub const MM_MMST_SIGNATURE: u32 = u32::from_le_bytes([b'S', b'M', b'S', b'T']);
+pub const MM_MMST_SIGNATURE: u32 = u32::from_le_bytes(*b"SMST");
 
 /// MMST major revision, the same as the PI Specification major revision.
 pub const MM_MMST_REVISION_MAJOR: u32 = spec_version::PI_SPECIFICATION_MAJOR_REVISION;

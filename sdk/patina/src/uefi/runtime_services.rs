@@ -567,7 +567,7 @@ pub(crate) mod test {
         type Error = &'static str;
 
         fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
-            assert!(value.len() == mem::size_of::<u32>());
+            assert_eq!(value.len(), mem::size_of::<u32>());
 
             Ok(DummyVariableType { value: u32::from_ne_bytes(value[0..4].try_into().unwrap()) })
         }

@@ -116,10 +116,7 @@ pub struct MemoryTypeInfoEntrySerDe {
 fn parse_memory_type_info_entries(data: &[u8]) -> Vec<MemoryTypeInfoEntrySerDe> {
     const ENTRY_SIZE: usize = core::mem::size_of::<MemoryTypeInfoEntrySerDe>();
     let mut entries = Vec::new();
-    for chunk in data.chunks_exact(ENTRY_SIZE) {
-        let &[m0, m1, m2, m3, p0, p1, p2, p3] = chunk else {
-            continue;
-        };
+    for &[m0, m1, m2, m3, p0, p1, p2, p3] in data.as_chunks::<ENTRY_SIZE>().0 {
         let memory_type = u32::from_le_bytes([m0, m1, m2, m3]);
         let number_of_pages = u32::from_le_bytes([p0, p1, p2, p3]);
         if (memory_type as usize) >= crate::uefi::memory::EFI_MAX_MEMORY_TYPE {

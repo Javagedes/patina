@@ -155,7 +155,9 @@ pub(crate) fn parse_hex_bytes(value: &str, offset: usize, field: &str) -> Result
 
     compact
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair).expect("hex digits are valid UTF-8");
             u8::from_str_radix(digits, 16)

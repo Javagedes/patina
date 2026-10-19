@@ -1926,8 +1926,10 @@ mod tests {
 
             let header_len = header.header_length as usize;
             let checksum = fv_bytes[..header_len]
-                .chunks_exact(2)
-                .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(value.try_into().unwrap())));
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(*value)));
             header.checksum = 0u16.wrapping_sub(checksum);
 
             // SAFETY: The serialized FV buffer is large enough to hold the header.

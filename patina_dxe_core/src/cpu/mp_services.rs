@@ -217,9 +217,10 @@ impl MpBistReporter {
             if reported {
                 return;
             }
-            match deferred_protocols.open_protocol::<StatusCodeProtocol>(handle) {
-                Ok(status_code) => {
-                    Self::report_bist_errors(&status_code, bist_error_count);
+            match deferred_protocols.with_protocol_on::<StatusCodeProtocol, _>(handle, |status_code| {
+                Self::report_bist_errors(status_code, bist_error_count);
+            }) {
+                Ok(()) => {
                     reported = true;
                 }
                 Err(e) => {
@@ -385,7 +386,6 @@ mod tests {
     #[test]
     fn test_mp_services_component_defers_bist_errors_until_status_code_protocol_is_available() {
         let mut protocols = MockProtocolServices::new();
-        protocols.expect_locate_interface().once().returning(|_| Err(ProtocolError::NotFound));
         protocols
             .expect_register_install_notify()
             .once()
@@ -484,7 +484,6 @@ mod tests {
         let protocol: &'static StatusCodeProtocol = Box::leak(Box::new(StatusCodeProtocol { report_status_code }));
         let address = core::ptr::from_ref(protocol) as usize;
         let mut protocols = MockProtocolServices::new();
-        protocols.expect_locate_interface().once().returning(|_| Err(ProtocolError::NotFound));
         protocols.expect_interface_on_handle().once().returning(move |_, _| {
             Ok(ProtocolPtr::from_raw(address as *mut core::ffi::c_void).expect("address is non-null"))
         });

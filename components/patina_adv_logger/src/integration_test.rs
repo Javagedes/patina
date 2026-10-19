@@ -37,7 +37,7 @@ fn adv_logger_test(protocols: Service<dyn ProtocolServices>) -> patina_test::err
     // message gets though by adjusting the max logging temporarily.
     let old_max = log::max_level();
     log::set_max_level(log::LevelFilter::Info);
-    log::info!("{}", &DIRECT_STR);
+    log::info!("{DIRECT_STR}");
     log::set_max_level(old_max);
 
     // Log using the protocol.

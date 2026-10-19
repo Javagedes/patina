@@ -62,7 +62,7 @@ understandable documentation.
 
 ### Type Template
 
-```rust
+```rust,ignore
 /// Summary line -> what this is
 ///
 /// <Optional> longer description and semantics regarding the type. (e.g. how to construct and deconstruct)
@@ -79,7 +79,7 @@ understandable documentation.
 
 ### Function Template
 
-```rust
+```rust,ignore
 /// Summary line -> what this is
 ///
 /// <Optional> longer description of what is returned

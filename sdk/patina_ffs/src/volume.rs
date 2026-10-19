@@ -92,8 +92,10 @@ impl<'a> VolumeRef<'a> {
         // Header checksum must be correct
         let header_slice = buffer.get(..header_length).ok_or(FirmwareFileSystemError::InvalidHeader)?;
         let sum = header_slice
-            .chunks_exact(2)
-            .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(value.try_into().unwrap())));
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(*value)));
         if sum != 0 {
             Err(FirmwareFileSystemError::InvalidHeader)?;
         }
@@ -155,12 +157,12 @@ impl<'a> VolumeRef<'a> {
         }
 
         let mut block_map = block_map
-            .chunks_exact(8)
-            .map(|x| fv::BlockMapEntry {
-                num_blocks: u32::from_le_bytes(
-                    x.get(..4).expect("chunks_exact(8) guarantees 8 bytes").try_into().unwrap(),
-                ),
-                length: u32::from_le_bytes(x.get(4..).expect("chunks_exact(8) guarantees 8 bytes").try_into().unwrap()),
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&[b0, b1, b2, b3, l0, l1, l2, l3]| fv::BlockMapEntry {
+                num_blocks: u32::from_le_bytes([b0, b1, b2, b3]),
+                length: u32::from_le_bytes([l0, l1, l2, l3]),
             })
             .collect::<Vec<_>>();
 
@@ -658,12 +660,14 @@ impl Volume {
         let checksum = fv_buffer
             .get(..header_len)
             .ok_or(FirmwareFileSystemError::InvalidHeader)?
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             //in the fv_buffer the following 3 fields are still set to zero, so manually add them to the checksum calculation.
-            .chain(fv_header.fv_length.to_le_bytes().chunks_exact(2))
-            .chain(fv_header.header_length.to_le_bytes().chunks_exact(2))
-            .chain(fv_header.ext_header_offset.to_le_bytes().chunks_exact(2))
-            .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(value.try_into().unwrap())));
+            .chain(fv_header.fv_length.to_le_bytes().as_chunks::<2>().0.iter())
+            .chain(fv_header.header_length.to_le_bytes().as_chunks::<2>().0.iter())
+            .chain(fv_header.ext_header_offset.to_le_bytes().as_chunks::<2>().0.iter())
+            .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(*value)));
         fv_header.checksum = 0u16.wrapping_sub(checksum);
 
         //re-write the updated fv_header into the front of the fv_buffer.
@@ -680,8 +684,10 @@ impl Volume {
             fv_buffer
                 .get(..header_len)
                 .expect("header_len is within fv_buffer")
-                .chunks_exact(2)
-                .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(value.try_into().unwrap()))),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .fold(0u16, |sum, value| sum.wrapping_add(u16::from_le_bytes(*value))),
             0
         );
 

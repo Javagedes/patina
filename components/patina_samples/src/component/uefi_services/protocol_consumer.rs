@@ -9,8 +9,8 @@
 //! lived approach
 //!
 //! 1. `with_protocol` runs a closure with the interface. Use it for a single, immediate use.
-//! 2. `open_protocol` returns a guard that dereferences to the interface for a block. Use it when
-//!    several statements in one scope need the interface.
+//! 2. `with_protocol_on` runs a closure with the interface on a specific handle. Use it when the
+//!    handle was already located, such as when iterating over handles.
 //! 3. `locate_token` returns a token that stores only a handle. Use it to keep a reference for a
 //!    longer period of time such as throughout boot. Call `resolve` to re-validate on each use.
 //! 4. `on_protocol_installed` runs a callback for every present and future install. Use it when
@@ -58,14 +58,12 @@ impl ProtocolConsumerSample {
 
         // Option 2 and 3 act on a specific handle, so first find one that has the protocol.
         if let Ok(handle) = protocols.locate_first_handle::<SampleVendorProtocol>() {
-            // Option 2: open_protocol. Best when a block needs the interface across several
-            // statements. The guard dereferences to the interface and releases access at the end
-            // of the block.
-            {
-                let protocol = protocols.open_protocol::<SampleVendorProtocol>(handle)?;
-                log::info!("open_protocol() revision is {:#x}", protocol.revision);
-                log::info!("open_protocol() status is {:#x}", (protocol.get_status)());
-            }
+            // Option 2: with_protocol_on. Same as with_protocol, but on a specific handle. The closure
+            // can use the interface across several statements.
+            protocols.with_protocol_on::<SampleVendorProtocol, _>(handle, |protocol| {
+                log::info!("with_protocol_on() revision is {:#x}", protocol.revision);
+                log::info!("with_protocol_on() status is {:#x}", (protocol.get_status)());
+            })?;
 
             // Option 3: locate_token then resolve. Best for using a protocol instance over time. The
             // token holds only a handle and doesn't dangle. resolve re-validates and returns None if the

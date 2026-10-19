@@ -8,11 +8,7 @@
 //!
 extern crate alloc;
 
-use alloc::{
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{format, string::String, vec::Vec};
 use patina::log_debug_assert;
 use scroll::{LE, Pread, Pwrite};
 
@@ -24,18 +20,14 @@ mod resource_directory;
 pub use goblin::pe::section_table::IMAGE_SCN_CNT_CODE;
 
 use relocation::{RelocationBlock, parse_relocation_blocks};
-use resource_directory::{DataEntry, Directory, DirectoryEntry, DirectoryString};
+use resource_directory::{DataEntry, Directory, DirectoryString};
 
-// Magic value for TE header.
-const TE_MAGIC: u16 = 0x5A56;
 // Magic value for PE32 header.
 const PE32_MAGIC: u16 = 0x5A4D;
 // The size of the PE32 signature.
 const SIZEOF_PE32_SIGNATURE: usize = 4;
 // The size of the COFF header.
 const SIZEOF_COFF_HEADER: usize = 20;
-// The offset from the start the TE header, that the image base is located at.
-const TE_IMAGE_BASE_HEADER_FIELD_OFFSET: usize = 16;
 // The size of the standard fields in the PE32Plus header.
 const SIZEOF_STANDARD_FIELDS_64: usize = 24;
 
@@ -47,6 +39,7 @@ const IMAGE_REL_BASED_HIGHLOW: u16 = 3;
 // Relocation type that requires the adjustment be applied to the entire
 // 64-bit value.
 const IMAGE_REL_BASED_DIR64: u16 = 10;
+const HII_RESOURCE_NAME: [u16; 3] = [b'H' as u16, b'I' as u16, b'I' as u16];
 
 /// PE/COFF Specification Machine Type for `IMAGE_FILE_MACHINE_AMD64` images.
 #[allow(dead_code)]
@@ -55,19 +48,9 @@ pub const IMAGE_MACHINE_TYPE_X64: u16 = 0x8664;
 #[allow(dead_code)]
 pub const IMAGE_MACHINE_TYPE_AARCH64: u16 = 0xAA64;
 
-/// Enum representing the type of header in a PE32 image.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub enum HeaderType {
-    Te(usize),
-    #[default]
-    Pe,
-}
-
 /// Type containing information about a PE32 image.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct UefiPeInfo {
-    /// Type of header (PE32 or TE)
-    pub header_type: HeaderType,
     /// Offset into an image header where the `image_base` address is located.
     /// NOT the actual image base address.
     pub image_base_header_field_offset: usize,
@@ -94,10 +77,13 @@ pub struct UefiPeInfo {
 }
 
 impl UefiPeInfo {
+    /// Parses a PE32+ image, gathering the necessary data for operating on the image in a UEFI environment.
+    ///
+    /// Terse Executable (TE) images are not supported: they do not carry a section alignment, which Patina requires
+    /// to be a multiple of 4 KB in order to apply image memory protections.
     pub fn parse(bytes: &[u8]) -> error::Result<Self> {
         match scroll::Pread::gread_with::<u16>(bytes, &mut 0, scroll::LE)? {
             PE32_MAGIC => UefiPeInfo::from_pe(bytes, &goblin::pe::options::ParseOptions::default()),
-            TE_MAGIC => UefiPeInfo::from_te(bytes),
             sig => Err(error::Error::BadSignature(sig)),
         }
     }
@@ -106,72 +92,40 @@ impl UefiPeInfo {
     ///
     /// This method uses `resolve_rva: false` so that goblin treats RVAs as direct byte offsets into
     /// the slice. This is useful for images where sections have been mapped to their virtual addresses.
+    ///
+    /// TE images are not supported, see [`UefiPeInfo::parse`].
     pub fn parse_mapped(bytes: &[u8]) -> error::Result<Self> {
         let mut opts = goblin::pe::options::ParseOptions::default();
         opts.resolve_rva = false;
         match scroll::Pread::gread_with::<u16>(bytes, &mut 0, scroll::LE)? {
             PE32_MAGIC => UefiPeInfo::from_pe(bytes, &opts),
-            TE_MAGIC => UefiPeInfo::from_te(bytes),
             sig => Err(error::Error::BadSignature(sig)),
         }
     }
 
-    /// Parses a PE with a TE header, gathering the necessary data for operating on the image in a UEFI environment.
-    fn from_te(bytes: &[u8]) -> error::Result<Self> {
-        let mut pe = UefiPeInfo::default();
-        let mut offset = 0;
-        let header = goblin::pe::header::TeHeader::parse(bytes, &mut offset)?;
-        let rva_offset = header.stripped_size as usize - core::mem::size_of::<goblin::pe::header::TeHeader>();
-        let sections = header.sections(bytes, &mut offset)?;
+    /// Verifies that every section lies entirely within the loaded image, that is, within `size_of_image`.
+    ///
+    /// A section occupies `VirtualAddress..VirtualAddress + VirtualSize` of the loaded image, with `VirtualSize`
+    /// rounded up to the section alignment as it is when memory protections are applied. Sections are not required
+    /// to be contiguous, so the sum of the section sizes may be smaller than `size_of_image`; each section only has
+    /// to end within it. The end is computed in 64 bits so that the 32-bit header fields cannot wrap.
+    ///
+    /// ## Errors
+    ///
+    /// Returns [`BufferTooShort`](error::Error::BufferTooShort) if any section extends past the end of the image, or
+    /// if its `VirtualSize` cannot be aligned to the section alignment.
+    pub fn validate_sections(&self) -> error::Result<()> {
+        let image_size = u64::from(self.size_of_image);
+        for section in &self.sections {
+            let aligned_virtual_size = patina::align_up(section.virtual_size, self.section_alignment)
+                .map_err(|_| error::Error::BufferTooShort(section.virtual_size as usize, "loaded_image"))?;
 
-        // Set the simple fields.
-        pe.image_base_header_field_offset = TE_IMAGE_BASE_HEADER_FIELD_OFFSET;
-        pe.header_type = HeaderType::Te(rva_offset);
-        pe.entry_point_offset = header.entry_point as usize;
-        pe.image_type = u16::from(header.subsystem);
-        pe.machine = header.machine;
-        pe.section_alignment = 0;
-        pe.size_of_headers = header.base_of_code as usize;
-        pe.sections = sections;
-        // TE doesn't have the optional header with DLL Characteristics, so we have to assume the image is NX_COMPAT
-        pe.nx_compat = true;
-
-        // TE headers always have a reloc dir, even if it's empty
-        // unlike PE32 headers.
-        if header.reloc_dir.size != 0 {
-            pe.reloc_dir = Some(header.reloc_dir);
-        }
-
-        // TE headers don't have a size of image filed like PE32 headers
-        // so it needs to be calculated.
-        let Some(last_section) = pe.sections.last() else {
-            return Err(error::Error::Goblin(goblin::error::Error::Malformed("No sections found in PE.".to_string())));
-        };
-        pe.size_of_image = last_section.virtual_address + last_section.virtual_size;
-
-        // Debug data is optional metadata. Use it when valid, but do not reject an otherwise
-        // loadable image when its debug directory cannot be resolved or parsed.
-        let mut debug_opts = goblin::pe::options::ParseOptions::default();
-        debug_opts.resolve_rva = false;
-        match goblin::pe::debug::DebugData::parse_with_opts_and_fixup(
-            bytes,
-            header.debug_dir,
-            &pe.sections,
-            0,
-            &debug_opts,
-            rva_offset as u32,
-        ) {
-            Ok(debug_data) => {
-                if let Some(codeview_data) = debug_data.codeview_pdb70_debug_info {
-                    pe.filename = UefiPeInfo::read_filename(codeview_data.filename)?;
-                }
-            }
-            Err(err) => {
-                log::warn!("Failed to parse optional TE/COFF debug metadata: {err:?}");
+            let end = u64::from(section.virtual_address) + u64::from(aligned_virtual_size);
+            if end > image_size {
+                return Err(error::Error::BufferTooShort(usize::try_from(end).unwrap_or(usize::MAX), "loaded_image"));
             }
         }
-
-        Ok(pe)
+        Ok(())
     }
 
     /// Parses a PE image with a PE32 header, gathering the necessary data for operating on the image in a UEFI environment.
@@ -188,7 +142,6 @@ impl UefiPeInfo {
         let sections = parsed_header.coff_header.sections(bytes, &mut section_table_offset)?;
 
         // Set the simple fields
-        pe.header_type = HeaderType::Pe;
         pe.entry_point_offset = optional_header.standard_fields.address_of_entry_point as usize;
         pe.image_type = optional_header.windows_fields.subsystem;
         pe.machine = parsed_header.coff_header.machine;
@@ -273,10 +226,9 @@ impl UefiPeInfo {
 ///
 /// ## Errors
 ///
-/// Returns [`Parse`](error::Error::Parse) error if parsing a image containing a TE header
-/// failed.
+/// Returns [`Parse`](error::Error::Parse) error if reading data from the image failed.
 ///
-/// Returns [`Goblin`](error::Error::Goblin) error if parsing a image containing a PE32 header
+/// Returns [`Goblin`](error::Error::Goblin) error if parsing the PE32 header
 /// failed. Contains the exact parsing [`Error`](goblin::error::Error).
 ///
 /// Returns [`BufferTooShort`](error::Error::BufferTooShort) error if either of the buffers provided are
@@ -318,10 +270,9 @@ pub fn load_image(pe_info: &UefiPeInfo, image: &[u8], loaded_image: &mut [u8]) -
 ///
 /// ## Errors
 ///
-/// Returns [`Parse`](error::Error::Parse) error if parsing a image containing a TE header
-/// failed.
+/// Returns [`Parse`](error::Error::Parse) error if reading data from the image failed.
 ///
-/// Returns [`Goblin`](error::Error::Goblin) error if parsing a image containing a PE32 header
+/// Returns [`Goblin`](error::Error::Goblin) error if parsing the PE32 header
 /// failed. Contains the exact parsing [`Error`](goblin::error::Error).
 ///
 /// Returns [`BufferTooShort`](error::Error::BufferTooShort) error if either of the buffers provided are
@@ -332,16 +283,11 @@ pub fn relocate_image(
     image: &mut [u8],
     prev_reloc_blocks: &[relocation::RelocationBlock],
 ) -> error::Result<Vec<RelocationBlock>> {
-    let rva_offset = match pe_info.header_type {
-        HeaderType::Te(rva_offset) => rva_offset,
-        HeaderType::Pe => 0,
-    };
-
     // Read original image base for future relocations, then update it.
     let base = image.pread_with::<u64>(pe_info.image_base_header_field_offset, LE)?;
-    image.pwrite_with::<u64>(destination as u64 - rva_offset as u64, pe_info.image_base_header_field_offset, LE)?;
+    image.pwrite_with::<u64>(destination as u64, pe_info.image_base_header_field_offset, LE)?;
 
-    let adjustment = (destination as u64).wrapping_sub(base + rva_offset as u64);
+    let adjustment = (destination as u64).wrapping_sub(base);
 
     if adjustment == 0 || pe_info.reloc_dir.is_none() {
         return Ok(Vec::new());
@@ -360,8 +306,7 @@ pub fn relocate_image(
     for (block_idx, reloc_block) in relocation_block.iter_mut().enumerate() {
         for (reloc_idx, reloc) in reloc_block.relocations.iter_mut().enumerate() {
             let fixup_type = reloc.type_and_offset >> 12;
-            let fixup =
-                reloc_block.block_header.page_rva as usize + (reloc.type_and_offset & 0xFFF) as usize - rva_offset;
+            let fixup = reloc_block.block_header.page_rva as usize + (reloc.type_and_offset & 0xFFF) as usize;
 
             match fixup_type {
                 IMAGE_REL_BASED_ABSOLUTE => {}
@@ -452,102 +397,59 @@ pub fn flatten_runtime_relocation_data(relocation_data: &[RelocationBlock]) -> e
 ///
 /// ## Errors
 ///
-/// Returns [`Parse`](crate::error::Error::Parse) error if parsing a image containing a TE header
-/// failed.
-///
 /// Returns [`Goblin`](error::Error::Goblin) error if parsing a image containing a PE32 header
 /// failed. Contains the exact parsing [`Error`](goblin::error::Error).
+///
+/// Returns [`BufferTooShort`](error::Error::BufferTooShort) if a resource directory structure extends beyond the
+/// resource section.
 pub fn load_resource_section(pe_info: &UefiPeInfo, image: &[u8]) -> error::Result<Option<(usize, usize)>> {
     let Some(resource_section) = get_section(".rsrc", pe_info, image)? else {
         return Ok(None);
     };
-    let size = resource_section.len() as u32;
-    let mut directory: Directory = resource_section.pread(0)?;
+    let directory = Directory::parse(resource_section)?;
 
-    let mut offset = directory.size_in_bytes();
-
-    if offset > size as usize {
-        return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(offset, "bytes")));
-    }
-
-    for i in 0..directory.number_of_named_entries {
-        let entry_offset = core::mem::size_of::<Directory>() + (i as usize) * core::mem::size_of::<DirectoryEntry>();
-        let mut directory_entry: DirectoryEntry = resource_section.pread(entry_offset)?;
+    for directory_entry in directory.named_entries() {
+        let mut directory_entry = directory_entry;
 
         if directory_entry.name_is_string() {
-            if directory_entry.name_offset() >= size {
-                return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(
-                    directory_entry.name_offset() as usize,
-                    "bytes",
-                )));
-            }
-
             let resource_directory_string =
-                resource_section.pread::<DirectoryString>(directory_entry.name_offset() as usize)?;
+                DirectoryString::parse(resource_section_at(resource_section, directory_entry.name_offset())?)?;
 
-            let name_start_offset = directory_entry.name_offset() as usize + core::mem::size_of::<DirectoryString>();
-            let name_end_offset = name_start_offset + (resource_directory_string.length as usize) * 2;
-            let string_val = resource_section
-                .get(name_start_offset..name_end_offset)
-                .ok_or(error::Error::Goblin(goblin::error::Error::BufferTooShort(name_end_offset, "bytes")))?;
-
-            // L"HII" in UTF-16LE = [0x48, 0x00, 0x49, 0x00, 0x49, 0x00]
-            if resource_directory_string.length == 3 && string_val == [0x48, 0x00, 0x49, 0x00, 0x49, 0x00] {
-                if directory_entry.data_is_directory() {
-                    if directory_entry.offset_to_directory() > size {
-                        return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(
-                            directory_entry.offset_to_directory() as usize,
-                            "bytes",
-                        )));
+            if resource_directory_string.matches(&HII_RESOURCE_NAME) {
+                // We found the HII resource section. The actual resource data can be located up to two levels deep in
+                // subdirectories.
+                for _ in 0..2 {
+                    if !directory_entry.data_is_directory() {
+                        break;
                     }
-
-                    directory = resource_section.pread(directory_entry.offset_to_directory() as usize)?;
-                    offset = (directory_entry.offset_to_directory() as usize) + directory.size_in_bytes();
-
-                    if offset > size as usize {
-                        return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(offset, "bytes")));
-                    }
-
-                    directory_entry = resource_section
-                        .pread((directory_entry.offset_to_directory() as usize) + core::mem::size_of::<Directory>())?;
-
-                    if directory_entry.data_is_directory() {
-                        if directory_entry.offset_to_directory() > size {
-                            return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(
-                                directory_entry.offset_to_directory() as usize,
-                                "bytes",
-                            )));
-                        }
-
-                        directory = resource_section.pread(directory_entry.offset_to_directory() as usize)?;
-
-                        offset = (directory_entry.offset_to_directory() as usize) + directory.size_in_bytes();
-
-                        if offset > size as usize {
-                            return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(offset, "bytes")));
-                        }
-
-                        directory_entry = resource_section.pread(
-                            (directory_entry.offset_to_directory() as usize) + core::mem::size_of::<Directory>(),
-                        )?;
-                    }
+                    let directory = Directory::parse(resource_section_at(
+                        resource_section,
+                        directory_entry.offset_to_directory(),
+                    )?)?;
+                    let Some(entry) = directory.first_entry() else {
+                        break;
+                    };
+                    directory_entry = entry;
                 }
 
                 if !directory_entry.data_is_directory() {
-                    if directory_entry.data >= size {
-                        return Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(
-                            directory_entry.data as usize,
-                            "bytes",
-                        )));
-                    }
-
-                    let resource_data_entry: DataEntry = resource_section.pread(directory_entry.data as usize)?;
-                    return Ok(Some((resource_data_entry.offset_to_data as usize, resource_data_entry.size as usize)));
+                    let resource_data_entry =
+                        DataEntry::parse(resource_section_at(resource_section, directory_entry.data_offset())?)?;
+                    return Ok(Some((
+                        resource_data_entry.offset_to_data() as usize,
+                        resource_data_entry.size() as usize,
+                    )));
                 }
             }
         }
     }
     Ok(None)
+}
+
+/// Returns the resource section bytes beginning at `offset`.
+fn resource_section_at(resource_section: &[u8], offset: u32) -> error::Result<&[u8]> {
+    let offset = offset as usize;
+    resource_section.get(offset..).ok_or(error::Error::BufferTooShort(offset, "resource section"))
 }
 
 /// Returns a slice of the provided image containing the data in the requested section, if it exists.
@@ -608,17 +510,82 @@ mod tests {
         assert_eq!(format!("{:?}", result.unwrap_err()), "BadSignature(23040)");
     }
 
+    fn section_validation_test_info(size_of_image: u32, sections: &[(u32, u32)]) -> UefiPeInfo {
+        let mut pe_info = UefiPeInfo { size_of_image, section_alignment: 0x1000, ..Default::default() };
+        for &(virtual_address, virtual_size) in sections {
+            pe_info.sections.push(goblin::pe::section_table::SectionTable {
+                virtual_address,
+                virtual_size,
+                ..Default::default()
+            });
+        }
+        pe_info
+    }
+
     #[test]
-    fn te_image_info_should_be_correct() {
+    fn test_validate_sections_accepts_sections_within_the_image() {
+        // Sections need not be contiguous: the sizes below do not sum to the image size.
+        let pe_info = section_validation_test_info(0x10000, &[(0x1000, 0x1234), (0xF000, 0x10)]);
+        pe_info.validate_sections().expect("sections within the image are valid");
+
+        // A section whose size is not aligned, but which ends exactly at the end of the image once rounded up.
+        let pe_info = section_validation_test_info(0x3000, &[(0x2000, 0x10)]);
+        pe_info.validate_sections().expect("a section may end exactly at the end of the image");
+
+        let pe_info = section_validation_test_info(0x3000, &[]);
+        pe_info.validate_sections().expect("an image without sections is valid");
+    }
+
+    #[test]
+    fn test_validate_sections_accepts_the_test_images() {
+        for image in [
+            &include_bytes!("../resources/test/pe32/test_image.pe32")[..],
+            &include_bytes!("../resources/test/pe32/DisplayEngine512BFileAlignment.efi")[..],
+        ] {
+            UefiPeInfo::parse(image).unwrap().validate_sections().expect("a valid image has sections in the image");
+        }
+    }
+
+    #[test]
+    fn test_validate_sections_rejects_sections_beyond_the_image() {
+        const FAILING: &[(u32, u32, u32)] = &[
+            // (size_of_image, virtual_address, virtual_size)
+            (0x3000, 0x2000, 0x1001),        // rounds up to a page past the end
+            (0x3000, 0x2FF0, 0x10),          // unaligned start: the rounded size runs past the end
+            (0x3000, 0x4000, 0x10),          // section starts after the image
+            (0x3000, 0x1000, 0xFFFF_FFF1),   // virtual size that cannot be aligned
+            (0x50000, 0x40000, 0xFFFC_0000), // virtual address + virtual size wraps 32 bits
+            (0x3000, 0xFFFF_F000, 0x2000),   // virtual address + virtual size wraps 32 bits
+        ];
+        for &(size_of_image, virtual_address, virtual_size) in FAILING {
+            let pe_info = section_validation_test_info(size_of_image, &[(virtual_address, virtual_size)]);
+            assert!(
+                matches!(pe_info.validate_sections(), Err(error::Error::BufferTooShort(_, "loaded_image"))),
+                "image {size_of_image:#x} section {virtual_address:#x}/{virtual_size:#x} must be rejected"
+            );
+        }
+
+        // Only the last of several sections is out of range.
+        let pe_info = section_validation_test_info(0x3000, &[(0x1000, 0x1000), (0x2000, 0x2000)]);
+        assert!(matches!(pe_info.validate_sections(), Err(error::Error::BufferTooShort(_, "loaded_image"))));
+
+        // A section alignment that is not a power of two cannot be used to round the size.
+        let mut pe_info = section_validation_test_info(0x3000, &[(0x1000, 0x10)]);
+        pe_info.section_alignment = 0;
+        assert!(matches!(pe_info.validate_sections(), Err(error::Error::BufferTooShort(_, "loaded_image"))));
+    }
+
+    #[test]
+    fn test_te_image_is_not_supported() {
         test_support::init_test_logger();
         let image = include_bytes!("../resources/test/te/test_image.te");
-        let image_info = UefiPeInfo::parse(image).unwrap();
 
-        assert_eq!(image_info.image_type, 11);
-        assert_eq!(image_info.section_alignment, 0x0);
-        assert_eq!(image_info.filename, Some(String::from("RustTerseImageTestDxe.efi")));
-        assert_eq!(image_info.size_of_image, 0x5ef8);
-        assert_eq!(image_info.entry_point_offset, 0x10a8);
+        // A TE image starts with the "VZ" magic, which is not a PE32 signature.
+        let result = UefiPeInfo::parse(image);
+        assert!(matches!(result, Err(error::Error::BadSignature(0x5A56))), "unexpected result: {result:?}");
+
+        let result = UefiPeInfo::parse_mapped(image);
+        assert!(matches!(result, Err(error::Error::BadSignature(0x5A56))), "unexpected result: {result:?}");
     }
 
     #[test]
@@ -662,38 +629,6 @@ mod tests {
         assert_eq!(image_info.filename, Some(String::from("DisplayEngine.efi")));
         assert_eq!(image_info.size_of_image, 0x12000);
         assert_eq!(image_info.entry_point_offset, 0xBE4B);
-    }
-
-    #[test]
-    fn te_load_image_should_load_the_image() {
-        test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image.te");
-        let image_info = UefiPeInfo::parse(image).unwrap();
-
-        let mut loaded_image: Vec<u8> = vec![0; image_info.size_of_image as usize];
-        assert_eq!(loaded_image.len(), image_info.size_of_image as usize);
-        load_image(&image_info, image, &mut loaded_image).unwrap();
-
-        let loaded_image_reference = include_bytes!("../resources/test/te/test_image_loaded.bin");
-
-        assert_eq!(loaded_image.len(), loaded_image_reference.len());
-        let first_mismatch = loaded_image.iter().enumerate().find(|(idx, byte)| &&loaded_image_reference[*idx] != byte);
-
-        assert!(first_mismatch.is_none(), "First mismatch at index {:x}", first_mismatch.unwrap().0);
-    }
-
-    #[test]
-    fn te_load_image_should_have_same_info() {
-        test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image_with_reloc_section.te");
-        let image_info = UefiPeInfo::parse(image).unwrap();
-
-        let mut loaded_image: Vec<u8> = vec![0; image_info.size_of_image as usize];
-        load_image(&image_info, image, &mut loaded_image).unwrap();
-
-        let loaded_image_info = UefiPeInfo::parse(&loaded_image).unwrap();
-
-        assert_eq!(image_info, loaded_image_info);
     }
 
     #[test]
@@ -746,35 +681,17 @@ mod tests {
     }
 
     #[test]
-    fn te_relocate_image_with_reloc_sections_should_work() {
+    fn pe_relocate_to_same_address_should_do_nothing() {
         test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image_with_reloc_section.te");
-        let reference_image = include_bytes!("../resources/test/te/test_image_with_reloc_section_relocated.bin");
+        let image = include_bytes!("../resources/test/pe32/test_image.pe32");
 
         let image_info = UefiPeInfo::parse(image).unwrap();
-
-        let mut relocated_image: Vec<u8> = vec![0; image_info.size_of_image as usize];
-
-        load_image(&image_info, image, &mut relocated_image).unwrap();
-        relocate_image(&image_info, 0x7CC5_8000, &mut relocated_image, &Vec::new()).unwrap();
-
-        assert_eq!(relocated_image.len(), reference_image.len());
-        let first_mismatch = relocated_image.iter().enumerate().find(|(idx, byte)| &&reference_image[*idx] != byte);
-        assert!(first_mismatch.is_none(), "First mismatch at index {:x}", first_mismatch.unwrap().0);
-    }
-
-    #[test]
-    fn te_relocate_to_same_address_should_do_nothing() {
-        test_support::init_test_logger();
-        let image1 = include_bytes!("../resources/test/te/test_image_with_reloc_section.te");
-
-        let image_info = UefiPeInfo::parse(image1).unwrap();
 
         let mut relocated_once = vec![0; image_info.size_of_image as usize];
         let mut relocated_twice = vec![0; image_info.size_of_image as usize];
 
-        load_image(&image_info, image1, &mut relocated_once).unwrap();
-        load_image(&image_info, image1, &mut relocated_twice).unwrap();
+        load_image(&image_info, image, &mut relocated_once).unwrap();
+        load_image(&image_info, image, &mut relocated_twice).unwrap();
 
         let blocks = relocate_image(&image_info, 0x0FFF_FFFF, &mut relocated_once, &Vec::new()).unwrap();
         let blocks = relocate_image(&image_info, 0x0FFF_FFFF, &mut relocated_twice, &blocks).unwrap();
@@ -831,7 +748,7 @@ mod tests {
     #[test]
     fn test_relocate_image_with_missing_reloc_dir() {
         test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image_with_reloc_section.te");
+        let image = include_bytes!("../resources/test/pe32/test_image.pe32");
         let image_info = UefiPeInfo::parse(image).unwrap();
         let mut loaded_image = vec![0; image_info.size_of_image as usize];
         load_image(&image_info, image, &mut loaded_image).unwrap();
@@ -848,7 +765,7 @@ mod tests {
     #[test]
     fn relocate_image_with_unsupported_reloc_type_returns_error() {
         test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image_with_reloc_section.te");
+        let image = include_bytes!("../resources/test/pe32/test_image.pe32");
         let image_info = UefiPeInfo::parse(image).unwrap();
         let mut loaded_image = vec![0; image_info.size_of_image as usize];
         load_image(&image_info, image, &mut loaded_image).unwrap();
@@ -953,19 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn te_load_resource_section_should_succeed() {
-        test_support::init_test_logger();
-        let image = include_bytes!("../resources/test/te/test_image.te");
-        let image_info = UefiPeInfo::parse(image).unwrap();
-
-        let mut loaded_image: Vec<u8> = vec![0; image_info.size_of_image as usize];
-        load_image(&image_info, image, &mut loaded_image).unwrap();
-
-        let result = load_resource_section(&image_info, image).unwrap();
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_load_resource_section_using_size_of_raw_data() {
         test_support::init_test_logger();
         const RELOC_DIR_ENTRY_INDEX: usize = 5;
@@ -1001,6 +905,135 @@ mod tests {
             Err(error::Error::Goblin(goblin::error::Error::BufferTooShort(..))) => {}
             Ok(_) => panic!("Expected BufferTooShort error"),
             Err(e) => panic!("Expected BufferTooShort error, got {e:?}"),
+        }
+    }
+
+    /// Builds a `.rsrc` section whose root directory has the named entries in `names` (each three characters),
+    /// but claims `declared_named` named entries and `declared_id` ID entries regardless of how many it really has.
+    ///
+    /// The entry named "HII" points to a data entry with `offset_to_data` 0xABCD and `size` 0x100. Layout:
+    ///   0x00: Directory (16 bytes)
+    ///   then: one 8 byte entry for each name, one 8 byte `DirectoryString` for each name, and the 16 byte `DataEntry`.
+    fn rsrc_section_with_named_entries(names: &[&str], declared_named: u16, declared_id: u16) -> Vec<u8> {
+        let entries_end = 0x10 + names.len() * 8;
+        let data_entry = entries_end + names.len() * 8;
+        let mut rsrc = vec![0u8; data_entry + 16];
+
+        rsrc[12..14].copy_from_slice(&declared_named.to_le_bytes());
+        rsrc[14..16].copy_from_slice(&declared_id.to_le_bytes());
+
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(name.chars().count(), 3, "the test strings are three characters long");
+            let entry = 0x10 + i * 8;
+            let string = entries_end + i * 8;
+
+            // Named by the string at `string`, with data (not a directory) at the DataEntry for "HII".
+            rsrc[entry..entry + 4].copy_from_slice(&(0x8000_0000 | string as u32).to_le_bytes());
+            if *name == "HII" {
+                rsrc[entry + 4..entry + 8].copy_from_slice(&(data_entry as u32).to_le_bytes());
+            }
+
+            rsrc[string..string + 2].copy_from_slice(&3u16.to_le_bytes());
+            for (j, unit) in name.encode_utf16().enumerate() {
+                rsrc[string + 2 + j * 2..string + 4 + j * 2].copy_from_slice(&unit.to_le_bytes());
+            }
+        }
+
+        rsrc[data_entry..data_entry + 4].copy_from_slice(&0xABCDu32.to_le_bytes());
+        rsrc[data_entry + 4..data_entry + 8].copy_from_slice(&0x100u32.to_le_bytes());
+        rsrc
+    }
+
+    fn pe_info_with_rsrc_section(rsrc: &[u8]) -> UefiPeInfo {
+        let mut pe_info = UefiPeInfo::default();
+        pe_info.sections.push(goblin::pe::section_table::SectionTable {
+            name: *b".rsrc\0\0\0",
+            virtual_size: rsrc.len() as u32,
+            size_of_raw_data: rsrc.len() as u32,
+            pointer_to_raw_data: 0,
+            ..Default::default()
+        });
+        pe_info
+    }
+
+    // The complete declared entry array is validated before searching it, so an overclaimed count is rejected even
+    // when a valid HII entry appears before the end of the section.
+    #[test]
+    fn test_load_resource_section_with_overclaimed_entry_counts_rejects_early_hii() {
+        test_support::init_test_logger();
+
+        for names in [&["HII"][..], &["ABC", "HII"][..]] {
+            let rsrc = rsrc_section_with_named_entries(names, u16::MAX, u16::MAX);
+            let pe_info = pe_info_with_rsrc_section(&rsrc);
+            let result = load_resource_section(&pe_info, &rsrc);
+            assert!(matches!(result, Err(error::Error::BufferTooShort(..))), "{names:?}: {result:?}");
+        }
+    }
+
+    // Parsing the claimed entries stops at the end of the section with an error, instead of reading past it.
+    #[test]
+    fn test_load_resource_section_with_overclaimed_entry_counts_stops_at_the_end_of_the_section() {
+        test_support::init_test_logger();
+
+        let rsrc = rsrc_section_with_named_entries(&["ABC"], u16::MAX, u16::MAX);
+        let pe_info = pe_info_with_rsrc_section(&rsrc);
+        let result = load_resource_section(&pe_info, &rsrc);
+        assert!(matches!(result, Err(error::Error::BufferTooShort(..))), "unexpected result: {result:?}");
+    }
+
+    #[test]
+    fn test_load_resource_section_with_underclaimed_entry_counts_does_not_find_hii() {
+        test_support::init_test_logger();
+
+        for (declared_named, declared_id) in [(1, 0), (0, 0)] {
+            let rsrc = rsrc_section_with_named_entries(&["ABC", "HII"], declared_named, declared_id);
+            let pe_info = pe_info_with_rsrc_section(&rsrc);
+            assert_eq!(load_resource_section(&pe_info, &rsrc).unwrap(), None, "{declared_named} {declared_id}");
+        }
+
+        for declared_named in [0, 1] {
+            let rsrc = rsrc_section_with_named_entries(&["ABC", "HII"], declared_named, u16::MAX);
+            let pe_info = pe_info_with_rsrc_section(&rsrc);
+            let result = load_resource_section(&pe_info, &rsrc);
+            assert!(matches!(result, Err(error::Error::BufferTooShort(..))), "{declared_named}: {result:?}");
+        }
+
+        // The same section with an accurate count does find it.
+        let rsrc = rsrc_section_with_named_entries(&["ABC", "HII"], 2, 0);
+        let pe_info = pe_info_with_rsrc_section(&rsrc);
+        assert_eq!(load_resource_section(&pe_info, &rsrc).unwrap(), Some((0xABCD, 0x100)));
+    }
+
+    #[test]
+    fn test_load_resource_section_with_out_of_bounds_offsets_returns_error() {
+        test_support::init_test_logger();
+
+        const OUT_OF_BOUNDS: u32 = 0x7FFF_FFF0;
+        const IS_DIRECTORY_OR_STRING: u32 = 0x8000_0000;
+
+        // The only entry is at 0x10: its name is at 0x10..0x14 and its data is at 0x14..0x18.
+        let valid = rsrc_section_with_named_entries(&["HII"], 1, 0);
+        let end_of_section = valid.len() as u32;
+
+        // A section with a valid nested directory at 0x30 whose first entry (at 0x40) is another directory.
+        let mut nested = valid.clone();
+        nested.extend_from_slice(&[0u8; 0x18]);
+        nested[0x14..0x18].copy_from_slice(&(IS_DIRECTORY_OR_STRING | 0x30).to_le_bytes());
+        nested[0x3C..0x3E].copy_from_slice(&1u16.to_le_bytes());
+
+        let cases = [
+            ("name", valid.clone(), 0x10, IS_DIRECTORY_OR_STRING | OUT_OF_BOUNDS),
+            ("name at the end of the section", valid.clone(), 0x10, IS_DIRECTORY_OR_STRING | end_of_section),
+            ("directory", valid.clone(), 0x14, IS_DIRECTORY_OR_STRING | OUT_OF_BOUNDS),
+            ("data entry", valid.clone(), 0x14, OUT_OF_BOUNDS),
+            ("nested directory", nested, 0x44, IS_DIRECTORY_OR_STRING | OUT_OF_BOUNDS),
+        ];
+
+        for (what, mut rsrc, field, value) in cases {
+            rsrc[field..field + 4].copy_from_slice(&value.to_le_bytes());
+            let pe_info = pe_info_with_rsrc_section(&rsrc);
+            let result = load_resource_section(&pe_info, &rsrc);
+            assert!(matches!(result, Err(error::Error::BufferTooShort(..))), "{what}: unexpected result: {result:?}");
         }
     }
 
@@ -1135,25 +1168,5 @@ mod tests {
 
         let mut loaded_image = vec![0; image_info.size_of_image as usize];
         load_image(&image_info, image, &mut loaded_image).unwrap();
-    }
-
-    #[test]
-    fn test_te_image_with_malformed_debug_directory_loads_without_filename() {
-        test_support::init_test_logger();
-        let mut image = include_bytes!("../resources/test/te/test_image.te").to_vec();
-
-        // debug_dir is the last field of TeHeader (a DataDirectory { virtual_address, size }).
-        // Corrupt its size so the debug directory can no longer be resolved, without disturbing
-        // anything else about the image.
-        const HEADER_SIZE: usize = core::mem::size_of::<goblin::pe::header::TeHeader>();
-        image[HEADER_SIZE - 8..HEADER_SIZE - 4].copy_from_slice(&0u32.to_le_bytes());
-        image[HEADER_SIZE - 4..HEADER_SIZE].copy_from_slice(&u32::MAX.to_le_bytes());
-
-        let image_info = UefiPeInfo::parse(&image).unwrap();
-
-        assert!(image_info.filename.is_none());
-
-        let mut loaded_image = vec![0; image_info.size_of_image as usize];
-        load_image(&image_info, &image, &mut loaded_image).unwrap();
     }
 }

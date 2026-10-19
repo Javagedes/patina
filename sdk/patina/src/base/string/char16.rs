@@ -292,10 +292,7 @@ fn decode_le_units(bytes: &[u8]) -> Result<Vec<u16>, StringError> {
     if !bytes.len().is_multiple_of(2) {
         return Err(StringError::OddByteLength { len: bytes.len() });
     }
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes(pair.try_into().expect("chunks_exact(2) yields 2-byte slices")))
-        .collect())
+    Ok(bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_le_bytes(*pair)).collect())
 }
 
 /// An owned, heap-backed, NUL-terminated UCS-2 (UEFI CHAR16) string.
@@ -757,6 +754,10 @@ impl<const N: usize> From<Char16Array<N>> for String {
 
 #[cfg(test)]
 #[cfg_attr(coverage, coverage(off))]
+// These tests exercise the `PartialEq` impls (including `!=` and cross-type operands) directly.
+// manual_assert_eq was introduced in 1.97.0. unknown_lints is used for clippy compatibility with the
+// current msrv (1.90.0). unknown_lints can be removed when the msrv is updated to 1.97.0+.
+#[allow(unknown_lints, clippy::manual_assert_eq)]
 mod tests {
     use super::*;
     use crate::char16;

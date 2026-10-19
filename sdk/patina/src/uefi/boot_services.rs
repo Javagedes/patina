@@ -252,7 +252,7 @@ pub trait BootServices {
     ///
     /// [UEFI Spec Documentation: 7.1.3. EFI_BOOT_SERVICES.CloseEvent()](https://uefi.org/specs/UEFI/2.10/07_Services_Boot_Services.html#efi-boot-services-closeevent)
     ///
-    /// [^note]: It is safe to call *`close_event`* in the notify function.
+    /// Note: It is safe to call *`close_event`* in the notify function.
     fn close_event(&self, event: efi::Event) -> Result<(), efi::Status>;
 
     /// Signals an event.
