@@ -1,0 +1,24 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+name: Patina PR Build Size Post
+
+on:
+  workflow_run:
+    workflows: ["Patina PR Build Size"]
+    types: [completed]
+
+concurrency:
+  group: pr-build-size-post-${{ github.event.workflow_run.display_title }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+jobs:
+  post-process:
+    if: github.event.workflow_run.event == 'workflow_run' && github.event.workflow_run.conclusion != 'cancelled'
+    uses: Javagedes/patina-devops/.github/workflows/PatinaPrBuildSizePost.yml@feature/pr-size-workflow
+    with:
+      triggering-run-id: ${{ github.event.workflow_run.id }}

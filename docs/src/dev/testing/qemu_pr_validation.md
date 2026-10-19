@@ -52,6 +52,89 @@ The workflow relies on several repositories and components:
 At any given time, a subset of these platforms may be disabled due to known issues or maintenance work. The PR comment
 will indicate which platforms were actually validated on each run.
 
+## PR Build Size Comparison
+
+The separate `Patina PR Build Size` workflow compares linked DXE Core EFI file sizes for PRs targeting `main` or
+`feature/**/*`. Like QEMU validation, it runs after the `CI` workflow succeeds for a pull request.
+Failed CI and CI runs for non-PR events do not start a size comparison. The size and QEMU boot checks run independently
+after that shared CI gate.
+The `Patina PR Build Size Post` workflow creates one PR comment and updates that same comment after subsequent runs.
+
+The comparison includes Q35 (`x86_64`) and ArmVirt (`aarch64`), each in DEBUG and RELEASE. The table reports target-branch
+and PR sizes in bytes, the signed byte difference, and the percentage difference relative to the target branch.
+It measures `.efi` files only, excluding separate debug symbols and the rest of the firmware ROM.
+
+Adding together all workspace `.rlib` files would not measure deployed firmware: archives contain compiler metadata
+and code that can overlap or be discarded during linking. Instead, the workflow builds
+[patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu) with each Patina revision patched
+in. Only the crates and features used by those platform integrations contribute to the reported sizes; this is not
+an all-crates size total.
+
+Both builds use the same integration commit, its Rust toolchain, and the existing QEMU setup/build action. This reuses
+workspace crate patching and the QEMU validation DEBUG/RELEASE settings, including disabling
+`exit_on_patina_test_failure`. The baseline is the **target branch tip**, not the merge base or always `main`, and the PR
+side is the **PR head**, not GitHub's synthetic merge commit. The caller captures the target tip and successful CI
+run's PR head SHA before dispatching the comparison. The reusable workflow builds exactly those commits with one
+shared QEMU integration revision. The comment links the exact Patina and integration commits measured.
+
+Like QEMU validation, a Patina/integration major-version mismatch skips the affected build and is reported explicitly.
+After building, the workflow also verifies that patched workspace crates did not fall back to registry versions.
+Build/setup failures and missing measurements are shown as unavailable, never as zero-sized binaries.
+The build logs are available in workflow artifacts. No firmware release assets or QEMU boot are required for this
+size-only comparison.
+
+Build jobs have read-only repository access and no secrets. A separate `workflow_run` caller invokes a trusted reusable
+post-processing workflow that reads only the JSON measurement artifacts, so fork PRs can receive comments
+without exposing write credentials to PR code. It validates measurements, paginates existing comments, and ignores
+outdated heads, PRs whose target branch changed, and older published runs.
+
+### Workflow Ownership and Deployment
+
+Like QEMU PR validation, the two lightweight event callers stay in `patina`:
+
+- `patina-pr-build-size.yml` resolves the incoming PR from the completed CI run, checks the supported target branch,
+  and passes only `base-sha` (the target branch tip) and `head-sha` (the PR head) to the reusable build workflow.
+- `patina-pr-build-size-post.yml` passes the completed run ID to the reusable post-processing workflow.
+
+The caller logs the head SHA/ref, target branch SHA/ref, and source repository, and skips closed, merged, missing,
+unsupported, or outdated PR revisions before dispatching a build. Its metadata preserves CI/PR identity, the target
+snapshot, and skip status for post-processing.
+
+The reusable build workflow does not fetch the PR or resolve Patina branches. It checks out the two supplied commit
+SHAs from the caller repository, including fork PR commits, pins one QEMU integration revision, and compiles both
+Patina snapshots. Both measurement artifacts must match the caller's frozen baseline, even if the target branch
+advances while builds run. Post-processing still checks the current PR before publishing, ignoring obsolete heads
+and PRs whose target branch changed.
+
+The reusable workflows use `workflow_call` inputs rather than depending on the caller's event payload.
+The post-processing workflow fetches authoritative run metadata from the caller repository using the supplied run ID.
+It validates the preserved PR identity against the successful originating CI run: the size workflow's own head SHA/ref
+identify the default branch, not the PR. The comment still links to the size-comparison run and exact PR/target commits.
+It contains its own reporting implementation and does not check out code from the caller or PR.
+
+The reusable implementations and their regression tests live in `patina-devops`:
+
+- [PatinaPrBuildSize.yml](https://github.com/Javagedes/patina-devops/blob/feature/pr-size-workflow/.github/workflows/PatinaPrBuildSize.yml)
+- [PatinaPrBuildSizePost.yml](https://github.com/Javagedes/patina-devops/blob/feature/pr-size-workflow/.github/workflows/PatinaPrBuildSizePost.yml)
+
+For fork validation, both callers reference the personal `patina-devops` fork's `feature/pr-size-workflow` branch.
+The two event callers must be on the Patina fork's default branch for `workflow_run` events to trigger them.
+The validation branch is used as the temporary default, leaving `main` unchanged.
+
+Create a PR within the Patina fork targeting that validation branch. Its successful PR CI run triggers the size
+comparison and comment publishing. To repeat the full chain manually, rerun that PR's CI run using
+`gh run rerun <ci-run-id> --repo Javagedes/patina`. This preserves its `pull_request` event; dispatching CI directly
+does not, and intentionally does not trigger a PR size comparison.
+
+Run the reusable regression tests in the `patina-devops` checkout with
+`node --test .github/scripts/pr-build-size.test.cjs`.
+The separate [caller tests](../../../../.github/scripts/pr-build-size-callers.test.cjs) run in Patina with
+`node --test .github/scripts/pr-build-size-callers.test.cjs`.
+
+After fork validation, publish the reusable workflows upstream before changing the callers to the upstream
+`patina-devops` repository's `main` branch. Update the helper action references and these documentation links too,
+then restore the Patina fork's default branch to `main`.
+
 ## Workflow Lifecycle
 
 The QEMU PR validation workflow builds the [patina-dxe-core-qemu](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu)

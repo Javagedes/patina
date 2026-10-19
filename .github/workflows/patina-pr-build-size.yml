@@ -1,0 +1,118 @@
+# Copyright (c) Microsoft Corporation.
+# SPDX-License-Identifier: Apache-2.0
+name: Patina PR Build Size
+run-name: Patina PR Build Size - ${{ github.event.workflow_run.head_repository.full_name }}:${{ github.event.workflow_run.head_branch }}
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+concurrency:
+  group: pr-build-size-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prepare:
+    name: Gather Incoming PR Metadata
+    runs-on: ubuntu-latest
+    if: |
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    outputs:
+      base_sha: ${{ steps.pr-info.outputs.base_sha }}
+      skip: ${{ steps.pr-info.outputs.skip }}
+    steps:
+      - name: Get PR Information
+        id: pr-info
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_REF: ${{ github.event.workflow_run.head_branch }}
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+        with:
+          script: |
+            const sourceRunId = Number(process.env.SOURCE_RUN_ID);
+            const headSha = process.env.HEAD_SHA;
+            const headRef = process.env.HEAD_REF;
+            const headRepo = process.env.HEAD_REPO;
+            if (!Number.isSafeInteger(sourceRunId) || sourceRunId <= 0 || !/^[a-f0-9]{40}$/.test(headSha) || !headRef) {
+              throw new Error('A valid source CI run, head SHA, and head ref are required.');
+            }
+            const associated = context.payload.workflow_run.pull_requests.map(pr => pr.number);
+            const matches = pr => pr.head.repo?.full_name === headRepo && pr.head.ref === headRef &&
+              (!associated.length || associated.includes(pr.number));
+            let pr;
+            if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(headRepo)) {
+              const query = { ...context.repo, head: `${headRepo.split('/')[0]}:${headRef}`, per_page: 100 };
+              const open = await github.paginate(github.rest.pulls.list, { ...query, state: 'open' });
+              pr = open.find(matches);
+              if (!pr) {
+                const closed = await github.paginate(github.rest.pulls.list, {
+                  ...query, state: 'closed', sort: 'updated', direction: 'desc',
+                });
+                pr = closed.find(matches);
+              }
+            }
+            let reason = '';
+            if (!pr) {
+              reason = 'branch_unavailable';
+            } else if (pr.state !== 'open') {
+              reason = pr.merged_at ? 'merged' : 'closed';
+            } else if (pr.head.sha !== headSha) {
+              reason = 'outdated_head';
+            } else if (pr.base.ref !== 'main' && !pr.base.ref.startsWith('feature/')) {
+              reason = 'unsupported_target_branch';
+            }
+            const metadata = {
+              source_run_id: sourceRunId, pr_number: pr?.number ?? null,
+              head_sha: headSha, base_sha: pr?.base.sha ?? '', base_ref: pr?.base.ref ?? '',
+              skipped: reason !== '', skip_reason: reason,
+            };
+            core.setOutput('base_sha', metadata.base_sha);
+            core.setOutput('skip', metadata.skipped);
+            core.setOutput('metadata', metadata);
+            if (metadata.skipped) {
+              core.notice(`Skipping PR size comparison: ${reason}.`);
+              return;
+            }
+            core.startGroup('PR Information');
+            core.info(`PR Number: ${pr.number}`);
+            core.info(`Head SHA: ${headSha}`);
+            core.info(`Head Ref: ${headRef}`);
+            core.info(`Base Ref: ${pr.base.ref}`);
+            core.info(`Base SHA: ${pr.base.sha}`);
+            core.info(`Source: ${headRepo}`);
+            core.endGroup();
+
+      - name: Create PR Metadata
+        if: steps.pr-info.outputs.metadata != ''
+        shell: bash
+        env:
+          PR_METADATA: ${{ steps.pr-info.outputs.metadata }}
+        run: |
+          mkdir -p metadata
+          printf '%s\n' "$PR_METADATA" > metadata/pr-metadata.json
+
+      - name: Upload PR Metadata
+        if: steps.pr-info.outputs.metadata != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: patina-build-size-pr-metadata
+          path: metadata/pr-metadata.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-size:
+    name: Run Patina Build Size Comparison
+    needs: [prepare]
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.skip == 'false'
+    uses: Javagedes/patina-devops/.github/workflows/PatinaPrBuildSize.yml@feature/pr-size-workflow
+    with:
+      base-sha: ${{ needs.prepare.outputs.base_sha }}
+      head-sha: ${{ github.event.workflow_run.head_sha }}
