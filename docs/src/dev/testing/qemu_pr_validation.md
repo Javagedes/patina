@@ -128,7 +128,8 @@ does not, and intentionally does not trigger a PR size comparison.
 
 Run the reusable regression tests in the `patina-devops` checkout with
 `node --test .github/scripts/pr-build-size.test.cjs`.
-The separate [caller tests](../../../../.github/scripts/pr-build-size-callers.test.cjs) run in Patina with
+The separate [caller tests](https://github.com/Javagedes/patina/blob/feature/pr-size-workflow/.github/scripts/pr-build-size-callers.test.cjs)
+run in Patina with
 `node --test .github/scripts/pr-build-size-callers.test.cjs`.
 
 After fork validation, publish the reusable workflows upstream before changing the callers to the upstream
