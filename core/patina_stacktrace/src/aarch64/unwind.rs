@@ -287,7 +287,7 @@ impl<'a> UnwindInfo<'a> {
     /// metadata. Supplying incorrect register snapshots can lead to invalid pointer
     /// dereferences while decoding the caller state.
     pub fn get_previous_stack_frame(&self, stack_frame: &StackFrame) -> StResult<StackFrame> {
-        log::debug!("    > {}", &self); // debug
+        log::debug!("    > {self}"); // debug
         match self {
             UnwindInfo::PackedUnwindInfo { image_name, frame_size, cr, reg_f, reg_i, h, .. } => {
                 UnwindCode::get_previous_stack_frame_packed(*frame_size, *cr, *reg_i, *reg_f, *h, stack_frame)

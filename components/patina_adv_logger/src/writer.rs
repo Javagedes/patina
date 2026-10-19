@@ -278,7 +278,7 @@ mod tests {
         // Use reader to verify the contents.
         // SAFETY: The buffer is still valid.
         let reader = unsafe { AdvancedLogReader::from_address(address) }.unwrap();
-        assert!(writer.discarded_size() == 0);
+        assert_eq!(writer.discarded_size(), 0);
         let mut iter = reader.iter();
         for entry_num in 0_u32..100 {
             let data = entry_num.to_be_bytes();

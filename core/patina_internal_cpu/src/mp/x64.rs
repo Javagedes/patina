@@ -544,7 +544,7 @@ impl MpDispatcher for MpSupport {
             log::info!("Parked application processors: {parked}/{expected} acknowledged");
         } else {
             log::error!("Timed out parking application processors: {parked}/{expected} acknowledged");
-            debug_assert!(parked == expected);
+            debug_assert_eq!(parked, expected);
         }
     }
 

@@ -172,7 +172,7 @@ pub(crate) mod tests {
 
     // A test function where we mock DxeComponentInterface to return what we want for the test.
     fn test_function(config: Config<i32>) -> crate::error::Result {
-        assert!(*config == 1);
+        assert_eq!(*config, 1);
         Ok(())
     }
 

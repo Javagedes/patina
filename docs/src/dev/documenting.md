@@ -28,7 +28,7 @@ supported attributes are `should_panic`, `no_run`, `compile_fail`, and `ignore`.
 Including `#[doc(html_playground_url = "https://playground.example.com/")]` will allow examples to
 be runnable in the documentation.
 
-``` rust
+``` rust,ignore
 /// ## Examples
 ///
 /// optional description
@@ -45,7 +45,7 @@ This section should be an exhaustive list of expected errors, but **not** an exh
 error enum values (unless all are possible). You should always contain the error type as a linked
 reference and the reason why the error would be returned.
 
-``` rust
+``` rust,ignore
 /// ## Errors
 ///
 /// Returns [ErrorName1](crate::module::ErrorEnum::Error1) when <this> happens
@@ -69,7 +69,7 @@ unsafe precondition(s) violated: slice::from_raw_parts requires the pointer
 to be aligned and non-null, and the total size of the slice not to exceed `isize::MAX`
 ```
 
-``` rust
+``` rust,ignore
 /// ## Safety
 ///
 /// <comments>

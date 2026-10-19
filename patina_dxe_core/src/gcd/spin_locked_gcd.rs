@@ -460,12 +460,12 @@ impl GCD {
         if let AllocateType::Address(base) = allocate_type
             && base & UEFI_PAGE_MASK != 0
         {
-            debug_assert!(base & UEFI_PAGE_MASK == 0);
+            debug_assert_eq!(base & UEFI_PAGE_MASK, 0);
             return Err(EfiError::InvalidParameter);
         }
 
         if len & UEFI_PAGE_MASK != 0 {
-            debug_assert!(len & UEFI_PAGE_MASK == 0);
+            debug_assert_eq!(len & UEFI_PAGE_MASK, 0);
             return Err(EfiError::InvalidParameter);
         }
 

@@ -432,9 +432,9 @@ impl InterruptHandler for HwInterruptProtocolHandler {
         let rw_handler = self
             .handlers
             .get(raw_value as usize)
-            .unwrap_or_else(|| panic!("Invalid interrupt source index 0x{:x}", raw_value))
+            .unwrap_or_else(|| panic!("Invalid interrupt source index 0x{raw_value:x}"))
             .try_read()
-            .unwrap_or_else(|| panic!("Failed to read lock in exception handler for interrupt ID 0x{:x}", raw_value));
+            .unwrap_or_else(|| panic!("Failed to read lock in exception handler for interrupt ID 0x{raw_value:x}"));
 
         if let Some(handler) = *rw_handler {
             handler(u64::from(raw_value), context);
@@ -442,7 +442,7 @@ impl InterruptHandler for HwInterruptProtocolHandler {
             GicCpuInterface::end_interrupt(int_id, InterruptGroup::Group1);
             log::error!("Unhandled Exception! 0x{exception_type:x}");
             log::error!("Exception Context: {context:#x?}");
-            panic! {"Unhandled Exception! 0x{:x}", exception_type};
+            panic! {"Unhandled Exception! 0x{exception_type:x}"};
         }
     }
 }

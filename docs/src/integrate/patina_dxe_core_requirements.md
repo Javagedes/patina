@@ -89,6 +89,13 @@ configuration.
 AArch64 DXE_RUNTIME_DRIVERs must have a multiple of 64 KB image section alignment per UEFI spec requirements.
 This is required to boot operating systems with 16 KB or 64 KB page sizes.
 
+The [Terse Executable (TE)](https://uefi.org/specs/PI/1.10/V1_TE_Image.html) image format is not supported. The TE
+format exists to reduce the size of images in flash by removing unnecessary PE/COFF header information. When an image
+is converted to TE, its section alignment and file alignment must be the same. Because Patina requires section
+alignment to be a multiple of 4 KB, a TE image can be larger than a traditional PE/COFF image that keeps a smaller
+file alignment, which defeats the purpose of the format in DXE. A TE image passed to `LoadImage()` is rejected with
+`EFI_UNSUPPORTED`.
+
 Patina components will have 4 KB section alignment by nature of being compiled into Patina.
 
 The DXE Readiness Tool validates all drivers have a multiple of 4 KB section alignment and reports an error if

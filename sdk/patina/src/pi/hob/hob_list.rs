@@ -363,20 +363,20 @@ impl<'a> HobList<'a> {
     pub fn relocate_hobs(&mut self) {
         for hob in &mut self.0 {
             match hob {
-                Hob::Handoff(hob) => *hob = Box::leak(Box::new(PhaseHandoffInformationTable::clone(hob))),
-                Hob::MemoryAllocation(hob) => *hob = Box::leak(Box::new(MemoryAllocation::clone(hob))),
-                Hob::MemoryAllocationModule(hob) => *hob = Box::leak(Box::new(MemoryAllocationModule::clone(hob))),
-                Hob::Capsule(hob) => *hob = Box::leak(Box::new(Capsule::clone(hob))),
-                Hob::ResourceDescriptor(hob) => *hob = Box::leak(Box::new(ResourceDescriptor::clone(hob))),
+                Hob::Handoff(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::MemoryAllocation(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::MemoryAllocationModule(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::Capsule(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::ResourceDescriptor(hob) => *hob = Box::leak(Box::new(**hob)),
                 Hob::GuidHob(hob, data) => {
-                    *hob = Box::leak(Box::new(GuidHob::clone(hob)));
+                    *hob = Box::leak(Box::new(**hob));
                     *data = Box::leak(data.to_vec().into_boxed_slice());
                 }
-                Hob::FirmwareVolume(hob) => *hob = Box::leak(Box::new(FirmwareVolume::clone(hob))),
-                Hob::FirmwareVolume2(hob) => *hob = Box::leak(Box::new(FirmwareVolume2::clone(hob))),
-                Hob::FirmwareVolume3(hob) => *hob = Box::leak(Box::new(FirmwareVolume3::clone(hob))),
-                Hob::Cpu(hob) => *hob = Box::leak(Box::new(Cpu::clone(hob))),
-                Hob::ResourceDescriptorV2(hob) => *hob = Box::leak(Box::new(ResourceDescriptorV2::clone(hob))),
+                Hob::FirmwareVolume(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::FirmwareVolume2(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::FirmwareVolume3(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::Cpu(hob) => *hob = Box::leak(Box::new(**hob)),
+                Hob::ResourceDescriptorV2(hob) => *hob = Box::leak(Box::new(**hob)),
                 Hob::Misc(_) => (), // Data is owned in Misc (nothing to move),
             }
         }

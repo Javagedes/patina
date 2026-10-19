@@ -108,9 +108,10 @@ impl SimpleFile<'_> {
         //to avoid an unsafe transmute, read the file size directly from the buffer instead of trying to convert the whole
         //buffer efi::protocols::file::Info. The file size is the second u64 in that buffer. TODO: proper conversion routine
         //for byte buffer -> efi::protocols::file::Info.
-        let file_size_as_bytes = file_info_buffer.chunks_exact(size_of::<u64>()).nth(1).ok_or(EfiError::NotFound)?;
+        let file_size_as_bytes =
+            file_info_buffer.as_chunks::<{ size_of::<u64>() }>().0.get(1).ok_or(EfiError::NotFound)?;
 
-        Ok(u64::from_le_bytes(file_size_as_bytes.try_into().or(Err(EfiError::InvalidParameter))?))
+        Ok(u64::from_le_bytes(*file_size_as_bytes))
     }
 
     /// Returns the file attributes
@@ -120,9 +121,9 @@ impl SimpleFile<'_> {
         //to avoid an unsafe transmute, read the attribute directly from the buffer instead of trying to convert the whole
         //buffer efi::protocols::file::Info. The attribute is the 10th u64 in that buffer. TODO: proper conversion routine
         //for byte buffer -> efi::protocols::file::Info
-        let file_attribute = file_info_buffer.chunks_exact(size_of::<u64>()).nth(9).ok_or(EfiError::NotFound)?;
+        let file_attribute = file_info_buffer.as_chunks::<{ size_of::<u64>() }>().0.get(9).ok_or(EfiError::NotFound)?;
 
-        Ok(u64::from_le_bytes(file_attribute.try_into().or(Err(EfiError::InvalidParameter))?))
+        Ok(u64::from_le_bytes(*file_attribute))
     }
 
     /// Reads the entire file into a byte vector and returns it

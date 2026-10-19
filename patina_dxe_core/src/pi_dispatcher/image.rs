@@ -380,9 +380,12 @@ impl PrivateImageData {
 
     /// Applies memory protections to the pages of this image based on section characteristics.
     fn apply_image_memory_protections(&self) -> Result<(), EfiError> {
+        let image_base = self.image_info.image_base as u64;
+        let image_end = image_base.checked_add(self.image_info.image_size).ok_or(EfiError::LoadError)?;
+
         for section in &self.pe_info.sections {
             // each section starts at image_base + virtual_address, per PE/COFF spec.
-            let section_base_addr = (self.image_info.image_base as u64) + u64::from(section.virtual_address);
+            let section_base_addr = image_base + u64::from(section.virtual_address);
 
             // we need to get the current attributes for this region and add our new attribute
             // if we can't find this range in the GCD, try the next one, but report the failure
@@ -406,6 +409,15 @@ impl PrivateImageData {
                     );
                     return Err(EfiError::LoadError);
                 };
+
+            // The section description comes from the image headers and is not trusted: a range that extends past
+            // the image would change the attributes of whatever memory follows it.
+            if section_base_addr.checked_add(aligned_virtual_size).is_none_or(|end| end > image_end) {
+                log::error!(
+                    "Image section at {section_base_addr:#X} with length {aligned_virtual_size:#X} exceeds the image ({image_base:#X}..{image_end:#X})",
+                );
+                return Err(EfiError::LoadError);
+            }
 
             if let Err(status) =
                 dxe_services::core_set_memory_space_capabilities(section_base_addr, aligned_virtual_size, capabilities)
@@ -1418,6 +1430,13 @@ fn core_load_pe_image(
         return Err(EfiError::LoadError);
     }
 
+    // every section must lie within the image that is about to be allocated, so nothing derived from the section
+    // headers (relocations, memory protections) can refer to memory outside of the image.
+    pe_info.validate_sections().map_err(|err| {
+        log::error!("core_load_pe_image failed: {pe_file_name} has a section outside of the image: {err:?}");
+        EfiError::LoadError
+    })?;
+
     image_info.image_size = size as u64;
     image_info.image_code_type = code_type;
     image_info.image_data_type = data_type;
@@ -1515,17 +1534,7 @@ fn get_file_buffer_from_sfs(file_path: NonNull<Protocol>) -> Result<(Vec<u8>, ef
         }
         // For MEDIA_FILE_PATH_DP, file name is in the node data, but it needs to be converted to u16 code units for
         // the call to open, since the raw device path bytes are not guaranteed to be aligned.
-        let filename: Vec<u16> = node
-            .data()
-            .chunks_exact(2)
-            .map(|x: &[u8]| {
-                if let Ok(x_bytes) = x.try_into() {
-                    Ok(u16::from_le_bytes(x_bytes))
-                } else {
-                    Err(EfiError::InvalidParameter)
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let filename: Vec<u16> = node.data().as_chunks::<2>().0.iter().map(|x| u16::from_le_bytes(*x)).collect();
         let filename = Char16Str::from_units_until_nul(&filename)?;
 
         file = file.open(filename, efi::protocols::file::MODE_READ, 0)?;
@@ -1728,9 +1737,12 @@ mod tests {
         test_collateral, test_support,
     };
     use core::{ffi::c_void, sync::atomic::AtomicBool};
-    use patina::standard::efi::{
-        self, Time,
-        protocols::device_path::{End, Hardware, Media, TYPE_END, TYPE_HARDWARE, TYPE_MEDIA},
+    use patina::{
+        UefiSpecVersion,
+        standard::efi::{
+            self, Time,
+            protocols::device_path::{End, Hardware, Media, TYPE_END, TYPE_HARDWARE, TYPE_MEDIA},
+        },
     };
     use patina::{
         error::EfiError,
@@ -1947,6 +1959,58 @@ mod tests {
             PI_DISPATCHER.init(&create_dxe_core_hob(), SYSTEM_TABLE.lock().as_mut().unwrap());
             let status = PI_DISPATCHER.load_image(false, protocol_db::DXE_CORE_HANDLE, None, Some(image.as_slice()));
             assert!(matches!(status, Err(ImageStatus::LoadError(EfiError::LoadError))));
+        });
+    }
+
+    #[test]
+    fn load_image_should_fail_for_zero_section_alignment() {
+        with_locked_state(|| {
+            let mut test_file = File::open(test_paths::RUST_IMAGE_HII_RESOURCE).expect("failed to open test file.");
+            let mut image: Vec<u8> = Vec::new();
+            test_file.read_to_end(&mut image).expect("failed to read test file");
+
+            // SectionAlignment is at offset 32 of the optional header, which follows the 4 byte PE signature and the
+            // 20 byte COFF header.
+            let pe_header_offset = u32::from_le_bytes(image[0x3C..0x40].try_into().unwrap()) as usize;
+            let section_alignment_offset = pe_header_offset + 4 + 20 + 32;
+            image[section_alignment_offset..section_alignment_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+            static PI_DISPATCHER: PiDispatcher<MockPlatformInfo> =
+                PiDispatcher::<MockPlatformInfo>::new(patina_ffs_extractors::NullSectionExtractor);
+            PI_DISPATCHER.init(&create_dxe_core_hob(), SYSTEM_TABLE.lock().as_mut().unwrap());
+            let status = PI_DISPATCHER.load_image(false, protocol_db::DXE_CORE_HANDLE, None, Some(image.as_slice()));
+            assert!(matches!(status, Err(ImageStatus::LoadError(EfiError::LoadError))), "{status:?}");
+        });
+    }
+
+    // TE images are not supported: they carry no section alignment, which must be a multiple of the page size to apply
+    // image memory protections. This runs the full LoadImage path on a TE image and checks that it is rejected when it
+    // is parsed, before any memory is allocated.
+    #[test]
+    fn load_image_should_fail_for_te_image() {
+        with_locked_state(|| {
+            let mut image: Vec<u8> = Vec::new();
+            File::open(test_collateral!("te/test_image.te"))
+                .expect("failed to open test file.")
+                .read_to_end(&mut image)
+                .expect("failed to read test file");
+
+            static PI_DISPATCHER: PiDispatcher<MockPlatformInfo> =
+                PiDispatcher::<MockPlatformInfo>::new(patina_ffs_extractors::NullSectionExtractor);
+            PI_DISPATCHER.init(&create_dxe_core_hob(), SYSTEM_TABLE.lock().as_mut().unwrap());
+
+            let handles_before =
+                PROTOCOL_DB.locate_handles(Some(efi::protocols::loaded_image::PROTOCOL_GUID)).unwrap().len();
+            let images_before = PI_DISPATCHER.image_data.lock().private_image_data.len();
+
+            let status = PI_DISPATCHER.load_image(false, protocol_db::DXE_CORE_HANDLE, None, Some(image.as_slice()));
+            assert!(matches!(status, Err(ImageStatus::LoadError(EfiError::Unsupported))), "{status:?}");
+
+            // No image handle was installed and nothing was recorded for a later StartImage().
+            let handles_after =
+                PROTOCOL_DB.locate_handles(Some(efi::protocols::loaded_image::PROTOCOL_GUID)).unwrap().len();
+            assert_eq!(handles_before, handles_after);
+            assert_eq!(images_before, PI_DISPATCHER.image_data.lock().private_image_data.len());
         });
     }
 
@@ -2989,6 +3053,103 @@ mod tests {
                 matches!(result, Err(EfiError::InvalidParameter)),
                 "Expected InvalidParameter from unaligned section address"
             );
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn core_load_pe_image_should_fail_when_a_section_extends_past_the_image() {
+        test_support::with_global_lock(|| {
+            // SAFETY: Test-only initialization of global tables happens under the global lock.
+            unsafe {
+                test_support::init_test_gcd(None);
+                test_support::init_test_protocol_db();
+                init_system_table(UefiSpecVersion::V2_11);
+            }
+
+            let mut test_file = File::open(test_paths::RUST_IMAGE).expect("failed to open test file.");
+            let mut valid_image: Vec<u8> = Vec::new();
+            test_file.read_to_end(&mut valid_image).expect("failed to read test file");
+
+            let size_of_image = UefiPeInfo::parse(&valid_image).unwrap().size_of_image;
+            let pe_offset = u32::from_le_bytes(valid_image[0x3C..0x40].try_into().unwrap()) as usize;
+            let opt_header_size = u16::from_le_bytes(valid_image[pe_offset + 20..pe_offset + 22].try_into().unwrap());
+            // VirtualSize is at offset 8 of the first section header.
+            let virtual_size_offset = pe_offset + 24 + usize::from(opt_header_size) + 8;
+
+            let assert_rejected = |virtual_size: u32| {
+                let mut image = valid_image.clone();
+                image[virtual_size_offset..virtual_size_offset + 4].copy_from_slice(&virtual_size.to_le_bytes());
+                let result = super::core_load_pe_image(&image, empty_image_info());
+                assert!(
+                    matches!(result, Err(EfiError::LoadError)),
+                    "VirtualSize {virtual_size:#x} must be rejected: {:?}",
+                    result.map(|_| ())
+                );
+            };
+
+            // The first section starts after the headers, so any VirtualSize of the whole image extends past it.
+            assert_rejected(size_of_image);
+            assert_rejected(0xFFFC_0000);
+            assert_rejected(0xFFFF_FFF1);
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn apply_memory_protections_should_not_modify_memory_after_the_image() {
+        test_support::with_global_lock(|| {
+            // SAFETY: Test-only initialization of global tables happens under the global lock.
+            unsafe {
+                test_support::init_test_gcd(None);
+                test_support::init_test_protocol_db();
+                init_system_table(UefiSpecVersion::V2_11);
+            }
+
+            let mut test_file = File::open(test_paths::RUST_IMAGE).expect("failed to open test file.");
+            let mut image: Vec<u8> = Vec::new();
+            test_file.read_to_end(&mut image).expect("failed to read test file");
+
+            let mut image_info = empty_image_info();
+            let mut pe_info = UefiPeInfo::parse(&image).unwrap();
+            image_info.image_size = u64::from(pe_info.size_of_image);
+            image_info.image_code_type = efi::BOOT_SERVICES_CODE;
+            image_info.image_data_type = efi::BOOT_SERVICES_DATA;
+
+            // Bypass core_load_pe_image() validation: the section is longer than the image.
+            pe_info.sections[0].virtual_size = 0xFFFC_0000;
+
+            let data_type = EfiMemoryType::from_efi(efi::BOOT_SERVICES_DATA).unwrap();
+
+            // Hold the top of memory while the image is allocated so that the image lands below it, then release it
+            // and allocate a neighbor at exactly the first address after the image.
+            let top = CoreMemoryManager
+                .allocate_pages(0x20, AllocationOptions::new().with_memory_type(data_type))
+                .unwrap()
+                .into_boxed_slice::<u8>();
+            let private_info = PrivateImageData::new(image_info, pe_info).unwrap();
+            let image_end = private_info.image_info.image_base as u64 + private_info.image_info.image_size;
+            drop(top);
+
+            let neighbor = CoreMemoryManager
+                .allocate_pages(
+                    0x20,
+                    AllocationOptions::new().with_memory_type(data_type).with_strategy(
+                        patina::component::service::memory::PageAllocationStrategy::Address(image_end as usize),
+                    ),
+                )
+                .unwrap()
+                .into_boxed_slice::<u8>();
+
+            let before = dxe_services::core_get_memory_space_descriptor(image_end).unwrap();
+
+            let result = private_info.apply_image_memory_protections();
+            assert!(matches!(result, Err(EfiError::LoadError)), "a section past the image must be rejected");
+
+            let after = dxe_services::core_get_memory_space_descriptor(image_end).unwrap();
+            assert_eq!(after.attributes, before.attributes, "memory after the image must not be modified");
+
+            drop(neighbor);
         })
         .unwrap();
     }

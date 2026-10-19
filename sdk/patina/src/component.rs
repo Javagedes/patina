@@ -73,12 +73,13 @@
 //! | Param                        | Description                                                                                                                                                           |
 //! |------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 //! | Hob\<T\>                     | A parsed, immutable, guid HOB (Hand-Off Block) that is automatically parsed and registered. See the [hob] module for more info.                                       |
-//! | Commands                     | A command queue to apply structural changes to [Storage] such as registering services. See the [params] module for more info.
+//! | Commands                     | A command queue to apply structural changes to [Storage] such as registering services. See the [params] module for more info.                                         |
 //! | Option\<P\>                  | An Option, where P implements `Param`. Allows components to run even when the underlying parameter is unavailable. See the [params] module for more info.             |
 //! | (P1, P2, ...)                | A Tuple where each entry implements `Param`. Useful when you need more parameters than the current parameter limit. See the [params] module for more info.            |
 //! | Config\<T\>                  | An immutable config value that will only be available once the underlying data has been locked. See The [params] module for more info.                                |
-//! | `ConfigMut`\<T\>               | A mutable config value that will only be available while the underlying data is unlocked. See the [params] module for more info.                                      |
+//! | `ConfigMut`\<T\>             | A mutable config value that will only be available while the underlying data is unlocked. See the [params] module for more info.                                      |
 //! | Service\<T\>                 | A wrapper for producing and consuming services of a particular interface, `T`, that is agnostic to the underlying implementation. See [service] module for more info. |
+//! | Protocol\<P\>                | A UEFI protocol interface located through the protocol database. Not dispatched until the interface is installed. See the [protocol] module for more info.            |
 //!
 //! ### Examples
 //!
@@ -138,6 +139,7 @@
 pub mod hob;
 mod metadata;
 pub mod params;
+pub mod protocol;
 pub mod service;
 mod storage;
 mod struct_component;
@@ -205,6 +207,7 @@ pub mod prelude {
             IntoComponent,
             hob::{FromHob, Hob},
             params::{Commands, Config, ConfigMut, Handle},
+            protocol::Protocol,
             service::{IntoService, Service},
         },
     };
@@ -329,7 +332,7 @@ mod tests {
 
         // Two parsers should be registered for this HOB GUID since the HOBs are two unique types
         // (`TestHob` and `TestHob2`)
-        assert!(storage.get_hob_parsers(&HOB_GUID).len() == 2);
+        assert_eq!(storage.get_hob_parsers(&HOB_GUID).len(), 2);
 
         storage.add_hob(TestHob);
         assert!(storage.get_hob::<TestHob>().is_some());

@@ -108,7 +108,7 @@ pub enum MessagingSubType {
     IpV6 = 13,
     /// VLAN device path.
     Vlan = 20,
-    /// InfiniBand device path.
+    /// `InfiniBand` device path.
     InfiniBand = 9,
     /// UART device path.
     Uart = 14,

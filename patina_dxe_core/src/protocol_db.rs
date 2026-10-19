@@ -2117,7 +2117,7 @@ mod tests {
             }
 
             let child_list = SPIN_LOCKED_PROTOCOL_DB.get_child_handles(controller);
-            assert!(child_list.len() == 3);
+            assert_eq!(child_list.len(), 3);
             for child in [child1, child2, child3] {
                 assert!(child_list.contains(&child));
             }

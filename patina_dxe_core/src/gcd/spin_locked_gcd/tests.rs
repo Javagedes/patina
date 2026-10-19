@@ -2035,10 +2035,10 @@ fn test_spin_locked_gcd_debug_and_display() {
         }
 
         // Ensure Debug doesn't panic
-        let _ = format!("{:?}", &GCD);
+        let _ = format!("{GCD:?}");
 
         // Ensure Display doesn't panic
-        let _ = format!("{}", &GCD);
+        let _ = format!("{GCD}");
     });
 }
 
@@ -2053,7 +2053,7 @@ fn test_io_gcd_display() {
         io_gcd.add_io_space(dxe_services::GcdIoType::Maximum, 0x2000, 0x300).unwrap();
 
         // Ensure Display doesn't panic
-        let _ = format!("{}", &io_gcd);
+        let _ = format!("{io_gcd}");
     });
 }
 
@@ -2207,7 +2207,7 @@ fn test_get_memory_descriptors_mmio_and_reserved_filter() {
             matches!(d.memory_type, GcdMemoryType::MemoryMappedIo | GcdMemoryType::Reserved)
         })
         .unwrap();
-        assert!(buffer.len() == 2);
+        assert_eq!(buffer.len(), 2);
         assert!(buffer.iter().any(|desc| desc.memory_type == GcdMemoryType::MemoryMappedIo
             && desc.base_address == 0x2000
             && desc.length == 0x1000));
@@ -2958,7 +2958,7 @@ fn test_set_paging_attributes_already_mapped_same_attributes() {
 
         // The implementation may optimize duplicate mappings, so we verify there's at least one mapping
         assert!(!mapped.is_empty());
-        assert!(mapped[0] == (base_address as u64, length as u64, MemoryAttributes::Writeback));
+        assert_eq!(mapped[0], (base_address as u64, length as u64, MemoryAttributes::Writeback));
 
         // If GCD optimizes away the duplicate, there might only be 1 map operation
         // If it doesn't optimize, there will be 2. Both behaviors are acceptable.

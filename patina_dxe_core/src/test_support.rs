@@ -810,7 +810,7 @@ pub(crate) fn build_test_hob_list(mem_size: u64) -> *const c_void {
 /// RUST_LOG=debug cargo test -p patina_dxe_core allocator::usage_tests::uefi_memory_map -- --nocapture
 /// ```
 ///
-/// PowerShell example:
+/// `PowerShell` example:
 ///
 /// ```powershell
 /// $env:RUST_LOG="debug"; cargo test -p patina_dxe_core allocator::usage_tests::uefi_memory_map -- --nocapture

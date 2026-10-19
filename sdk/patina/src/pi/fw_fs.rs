@@ -206,8 +206,7 @@ impl<'a> FirmwareVolume<'a> {
         }
 
         let header_slice = buffer.get(..fv_header.header_length as usize).ok_or(efi::Status::VOLUME_CORRUPTED)?;
-        let sum: Wrapping<u16> =
-            header_slice.chunks_exact(2).map(|x| Wrapping(u16::from_le_bytes(x.try_into().unwrap()))).sum();
+        let sum: Wrapping<u16> = header_slice.as_chunks::<2>().0.iter().map(|x| Wrapping(u16::from_le_bytes(*x))).sum();
 
         if sum != Wrapping(0u16) {
             Err(efi::Status::VOLUME_CORRUPTED)?;
@@ -271,12 +270,12 @@ impl<'a> FirmwareVolume<'a> {
         }
 
         let mut block_map = block_map
-            .chunks_exact(8)
-            .map(|x| fv::BlockMapEntry {
-                num_blocks: u32::from_le_bytes(
-                    x.get(..4).expect("chunks_exact(8) guarantees 8 bytes").try_into().unwrap(),
-                ),
-                length: u32::from_le_bytes(x.get(4..).expect("chunks_exact(8) guarantees 8 bytes").try_into().unwrap()),
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|&[b0, b1, b2, b3, l0, l1, l2, l3]| fv::BlockMapEntry {
+                num_blocks: u32::from_le_bytes([b0, b1, b2, b3]),
+                length: u32::from_le_bytes([l0, l1, l2, l3]),
             })
             .collect::<Vec<_>>();
 

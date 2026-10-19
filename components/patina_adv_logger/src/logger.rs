@@ -444,7 +444,7 @@ mod tests {
             log::LevelFilter::Debug,
             serial,
         );
-        assert!(logger_uninit.timer.map_or(0, |timer| timer.cpu_count()) == 0);
+        assert_eq!(logger_uninit.timer.map_or(0, |timer| timer.cpu_count()), 0);
     }
 
     #[test]

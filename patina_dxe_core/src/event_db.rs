@@ -1103,7 +1103,7 @@ mod tests {
             }
 
             //ensure only one notify was queued
-            assert!(SPIN_LOCKED_EVENT_DB.lock().pending_notifies.len() == 1);
+            assert_eq!(SPIN_LOCKED_EVENT_DB.lock().pending_notifies.len(), 1);
 
             //ensure the mere act of collecting the events doesn't allow another notification to be queued
             let _ = SPIN_LOCKED_EVENT_DB.consume_next_event_notify(efi::TPL_APPLICATION);
@@ -1113,7 +1113,7 @@ mod tests {
             //ensure the event can be re-queued after it's signal state has been cleared
             assert!(SPIN_LOCKED_EVENT_DB.clear_signal(event).is_ok());
             assert!(SPIN_LOCKED_EVENT_DB.signal_event(event).is_ok());
-            assert!(SPIN_LOCKED_EVENT_DB.lock().pending_notifies.len() == 1);
+            assert_eq!(SPIN_LOCKED_EVENT_DB.lock().pending_notifies.len(), 1);
         });
     }
 

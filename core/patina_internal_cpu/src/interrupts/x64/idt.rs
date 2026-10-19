@@ -87,9 +87,9 @@ const _: () = assert!(core::mem::size_of::<Idt>() == 4096);
 #[cfg(target_os = "uefi")]
 struct StaticIdt(UnsafeCell<Idt>);
 
+#[cfg(target_os = "uefi")]
 // SAFETY: IDT initialization and loading is serialized during early CPU init and concurrent
 // access is not possible
-#[cfg(target_os = "uefi")]
 unsafe impl Sync for StaticIdt {}
 
 /// Gets the address of the assembly entry point for the given vector index.

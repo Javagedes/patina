@@ -282,7 +282,7 @@ impl<P: PlatformInfo> PiDispatcher<P> {
                 dispatcher.arch_protocols_available =
                     Depex::from(ALL_ARCH_DEPEX).eval(&PROTOCOL_DB.registered_protocols());
             }
-            let driver_candidates: Vec<_> = dispatcher.pending_drivers.drain(..).collect();
+            let driver_candidates: Vec<_> = core::mem::take(&mut dispatcher.pending_drivers);
             let mut scheduled_driver_candidates = Vec::new();
             for mut candidate in driver_candidates {
                 log::debug!(target: "depex", "Evaluating depex for candidate: {} ({:?})", candidate.name.as_deref().unwrap_or("Unnamed"), OwnedGuid::from(candidate.file_name));
@@ -380,7 +380,7 @@ impl<P: PlatformInfo> PiDispatcher<P> {
 
         {
             let mut dispatcher = self.dispatcher_context.lock();
-            let fv_image_candidates: Vec<_> = dispatcher.pending_firmware_volume_images.drain(..).collect();
+            let fv_image_candidates: Vec<_> = core::mem::take(&mut dispatcher.pending_firmware_volume_images);
 
             for mut candidate in fv_image_candidates {
                 let depex_satisfied = match candidate.depex {
@@ -749,12 +749,8 @@ impl DispatcherContext {
                             .find(|x| x.section_type() == Some(ffs::section::Type::UserInterface))
                             .and_then(|x| x.try_content_as_slice().ok())
                             .and_then(|data| {
-                                let units: Vec<u16> = data
-                                    .chunks_exact(2)
-                                    .map(|c| {
-                                        u16::from_le_bytes(c.try_into().expect("chunks_exact(2) guarantees length"))
-                                    })
-                                    .collect();
+                                let units: Vec<u16> =
+                                    data.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
                                 Char16Str::from_units_until_nul(&units).ok().map(|s| s.chars().collect())
                             });
 
@@ -999,8 +995,8 @@ mod tests {
         );
         assert!(OrdGuid(g7) >= OrdGuid(g7));
         assert!(OrdGuid(g7) <= OrdGuid(g7));
-        assert!(OrdGuid(g7) != OrdGuid(g6));
-        assert!(OrdGuid(g7) == OrdGuid(g7));
+        assert_ne!(OrdGuid(g7), OrdGuid(g6));
+        assert_eq!(OrdGuid(g7), OrdGuid(g7));
         assert_eq!(g1.partial_cmp(&g2), Some(Ordering::Less));
         assert_eq!(g2.partial_cmp(&g1), Some(Ordering::Greater));
         assert_eq!(g1.partial_cmp(&g1), Some(Ordering::Equal));
