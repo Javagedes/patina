@@ -126,6 +126,11 @@ comparison and comment publishing. To repeat the full chain manually, rerun that
 `gh run rerun <ci-run-id> --repo Javagedes/patina`. This preserves its `pull_request` event; dispatching CI directly
 does not, and intentionally does not trigger a PR size comparison.
 
+A documentation-only validation PR can exercise the full chain without changing the firmware code. All four rows
+should report unchanged sizes, and a later push should update the existing comparison comment.
+
+Record the comment URL before pushing again to verify that the second run updates the original comment.
+
 Run the reusable regression tests in the `patina-devops` checkout with
 `node --test .github/scripts/pr-build-size.test.cjs`.
 The separate [caller tests](https://github.com/Javagedes/patina/blob/feature/pr-size-workflow/.github/scripts/pr-build-size-callers.test.cjs)
