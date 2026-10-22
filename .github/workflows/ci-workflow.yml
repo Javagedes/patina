@@ -1,51 +1,38 @@
-# @file ci-workflow.yml
-#
-# A workflow that runs basic CI tests and Rust CI tests, triggered on a pull_request or push to
-# main.
-#
-# NOTE: This file is automatically synchronized from Patina DevOps. Update the original file there
-#       instead of the file in this repo.
-#
-# - Patina DevOps Repo: https://github.com/OpenDevicePartnership/patina-devops
-# - File Sync Settings: https://github.com/OpenDevicePartnership/patina-devops/blob/main/.sync/Files.yml
-#
-##
+# Temporary fork-only QEMU validation and binary-size test caller.
 # Copyright (c) Microsoft Corporation.
 # SPDX-License-Identifier: Apache-2.0
-##
-name: CI
+name: Fork QEMU Binary Size E2E
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - major
-      - feature/**/*
   pull_request:
     branches:
-      - main
-      - major
-      - feature/**/*
+      - test/qemu-size-e2e-base-20261020
+  workflow_dispatch:
+    inputs:
+      triggering-run-id:
+        description: Completed PR validation run to post-process.
+        required: true
+        type: string
 
-# Do not allow more than one instance of this workflow to run at the same
-# time for the same PR ref (branch). Prefer head_ref but fall back to ref
-# for push events.
-# - head_ref example: "branch_name"
-# - ref example: "refs/pull/7/merge"
-concurrency:
-  group: ci-${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  statuses: write
 
 jobs:
-  ci_workflow:
-    name: Run
-    uses: OpenDevicePartnership/patina-devops/.github/workflows/CiWorkflow.yml@37902f7991125091a91ca4054395d2d65576a7f5 # v0.3.16
+  validation:
+    if: github.event_name == 'pull_request'
+    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidation.yml@fe19f6bacb322c0e669327c8c8234a48655d40c9
     with:
-      build-tasks: build,build-x64,build-aarch64
-      run-cargo-vet: false
-    secrets: inherit
-  mdbook_docs_test:
-    name: Run
-    uses: OpenDevicePartnership/patina-devops/.github/workflows/MdbookWorkflow.yml@37902f7991125091a91ca4054395d2d65576a7f5 # v0.3.16
-    secrets: inherit
+      patina-ref: ${{ github.event.pull_request.head.sha }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+      base-ref: ${{ github.event.pull_request.base.ref }}
+      pr-number: ${{ github.event.pull_request.number }}
+
+  post-process:
+    if: github.event_name == 'workflow_dispatch'
+    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidationPost.yml@fe19f6bacb322c0e669327c8c8234a48655d40c9
+    with:
+      triggering-run-id: ${{ fromJSON(inputs.triggering-run-id || '0') }}
+      conclusion: success
