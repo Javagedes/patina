@@ -23,7 +23,7 @@ permissions:
 jobs:
   validation:
     if: github.event_name == 'pull_request'
-    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidation.yml@96ce8a8f06a41eaaebc9f62a5b36a9017e27ab74
+    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidation.yml@fe19f6bacb322c0e669327c8c8234a48655d40c9
     with:
       patina-ref: ${{ github.event.pull_request.head.sha }}
       head-sha: ${{ github.event.pull_request.head.sha }}
@@ -32,7 +32,7 @@ jobs:
 
   post-process:
     if: github.event_name == 'workflow_dispatch'
-    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidationPost.yml@96ce8a8f06a41eaaebc9f62a5b36a9017e27ab74
+    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidationPost.yml@fe19f6bacb322c0e669327c8c8234a48655d40c9
     with:
       triggering-run-id: ${{ fromJSON(inputs.triggering-run-id || '0') }}
       conclusion: success
