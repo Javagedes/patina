@@ -67,17 +67,25 @@ impl Debug for MemoryAttributesTable {
         // SAFETY: mat.entry points to number_of_entries descriptors in the MAT.
         let entries = unsafe { slice::from_raw_parts(mat.entry.as_ptr(), mat.number_of_entries as usize) };
 
-        writelncrlf!(f, "MemoryAttributesTable {{")?;
-        writelncrlf!(f, "  version: {:#X}", mat.version)?;
-        writelncrlf!(f, "  number_of_entries: {:#X}", mat.number_of_entries)?;
-        writelncrlf!(f, "  descriptor_size: {:#X}", mat.descriptor_size)?;
-        writelncrlf!(f, "  flags: {:#X}", mat.flags)?;
-        writelncrlf!(f, "  entries: [")?;
-
-        writelncrlf!(f, "{:?}", MemoryDescriptorSlice(entries))?;
-
-        writelncrlf!(f, "  ]")?;
-        writelncrlf!(f, "}}")
+        writelncrlf!(
+            f,
+            concat!(
+                "MemoryAttributesTable {{\r\n",
+                "  version: {:#X}\r\n",
+                "  number_of_entries: {:#X}\r\n",
+                "  descriptor_size: {:#X}\r\n",
+                "  flags: {:#X}\r\n",
+                "  entries: [\r\n",
+                "{:?}\r\n",
+                "  ]\r\n",
+                "}}"
+            ),
+            mat.version,
+            mat.number_of_entries,
+            mat.descriptor_size,
+            mat.flags,
+            MemoryDescriptorSlice(entries)
+        )
     }
 }
 
@@ -261,6 +269,24 @@ mod tests {
         test_support,
     };
     use patina::{UEFI_PAGE_SIZE, uefi_size_to_pages};
+
+    #[test]
+    fn test_mat_debug_format() {
+        let mut mat = efi::MemoryAttributesTable {
+            version: 2,
+            number_of_entries: 0,
+            descriptor_size: size_of::<efi::MemoryDescriptor>() as u32,
+            flags: 1,
+            entry: [],
+        };
+        let expected = std::format!(
+            "MemoryAttributesTable {{\r\n  version: 0x2\r\n  number_of_entries: 0x0\r\n  \
+             descriptor_size: {:#X}\r\n  flags: 0x1\r\n  entries: [\r\n{:?}\r\n  ]\r\n}}\r\n",
+            size_of::<efi::MemoryDescriptor>(),
+            MemoryDescriptorSlice(&[])
+        );
+        assert_eq!(std::format!("{:?}", MemoryAttributesTable(&raw mut mat)), expected);
+    }
 
     fn with_locked_state<F: Fn() + std::panic::RefUnwindSafe>(f: F) {
         test_support::with_clean_global_lock(|| {

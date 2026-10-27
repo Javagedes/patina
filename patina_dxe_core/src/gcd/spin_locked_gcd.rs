@@ -1313,11 +1313,10 @@ impl Display for GCD {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writelncrlf!(
             f,
-            "GCDMemType Range                             Capabilities     Attributes       ImageHandle      DeviceHandle"
-        )?;
-        writelncrlf!(
-            f,
-            "========== ================================= ================ ================ ================ ================"
+            concat!(
+                "GCDMemType Range                             Capabilities     Attributes       ImageHandle      DeviceHandle\r\n",
+                "========== ================================= ================ ================ ================ ================"
+            )
         )?;
 
         let blocks = &self.memory_blocks;

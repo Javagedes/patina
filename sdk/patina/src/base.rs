@@ -550,7 +550,7 @@ macro_rules! signature {
 #[macro_export]
 macro_rules! writelncrlf {
     ($target:expr, $($arg:tt)*) => {
-        write!($target, $($arg)*).and_then(|()| write!($target, "\r\n"))
+        write!($target, "{}\r\n", format_args!($($arg)*))
     };
 }
 
@@ -760,5 +760,57 @@ mod tests {
             s,
             "Hello, World!\r\nAnother line!\r\nA line with CRLF in it!\r\n\r\nJust LF!\n\r\nA line with args: 42\r\n"
         );
+    }
+
+    #[test]
+    fn test_writelncrlf_format_arguments() {
+        use std::fmt::Write;
+
+        let value = 42;
+        let mut output = String::new();
+        writelncrlf!(&mut output, "{value:#06x} {label}", label = "captured").unwrap();
+        writelncrlf!(&mut output, concat!("macro ", "{}"), value).unwrap();
+        writelncrlf!(&mut output, "trailing {}", value,).unwrap();
+        writelncrlf!(&mut output, "").unwrap();
+        assert_eq!(output, "0x002a captured\r\nmacro 42\r\ntrailing 42\r\n\r\n");
+    }
+
+    #[test]
+    fn test_writelncrlf_evaluates_target_once() {
+        use std::fmt::Write;
+
+        let mut outputs = [String::new(), String::new()];
+        let mut targets = outputs.iter_mut();
+        writelncrlf!(targets.next().unwrap(), "one line").unwrap();
+        assert_eq!(outputs, ["one line\r\n", ""]);
+    }
+
+    #[test]
+    fn test_writelncrlf_io_writer() {
+        use std::io::Write;
+
+        let mut output = Vec::new();
+        writelncrlf!(&mut output, "value: {}", 42).unwrap();
+        assert_eq!(output, b"value: 42\r\n");
+    }
+
+    #[test]
+    fn test_writelncrlf_propagates_write_errors() {
+        use std::fmt::{self, Write};
+
+        struct FailingWriter {
+            writes: usize,
+        }
+
+        impl Write for FailingWriter {
+            fn write_str(&mut self, _: &str) -> fmt::Result {
+                self.writes += 1;
+                Err(fmt::Error)
+            }
+        }
+
+        let mut writer = FailingWriter { writes: 0 };
+        assert_eq!(writelncrlf!(&mut writer, "value: {}", 42), Err(fmt::Error));
+        assert_eq!(writer.writes, 1);
     }
 }

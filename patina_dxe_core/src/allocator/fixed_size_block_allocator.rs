@@ -863,8 +863,7 @@ impl FixedSizeBlockAllocator {
 
 impl Display for FixedSizeBlockAllocator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writelncrlf!(f, "Memory Type: {:x?}", self.memory_type())?;
-        writelncrlf!(f, "Allocation Ranges:")?;
+        writelncrlf!(f, "Memory Type: {:x?}\r\nAllocation Ranges:", self.memory_type())?;
         for node in AllocatorIterator::new(self.allocators) {
             // SAFETY: node is produced by AllocatorIterator and points to a valid AllocatorListNode.
             let (region_base, allocator) = unsafe { ((*node).region_base(), &mut (*node).allocator) };
@@ -878,18 +877,32 @@ impl Display for FixedSizeBlockAllocator {
                 allocator.free(),
             )?;
         }
-        writelncrlf!(f, "Bucket Range: {:x?}", self.reserved_range)?;
-        writelncrlf!(f, "Allocation Stats:")?;
-        writelncrlf!(f, "  pool_allocation_calls: {}", self.stats.pool_allocation_calls)?;
-        writelncrlf!(f, "  pool_free_calls: {}", self.stats.pool_free_calls)?;
-        writelncrlf!(f, "  page_allocation_calls: {}", self.stats.page_allocation_calls)?;
-        writelncrlf!(f, "  page_free_calls: {}", self.stats.page_free_calls)?;
-        writelncrlf!(f, "  reserved_size: {}", self.stats.reserved_size)?;
-        writelncrlf!(f, "  reserved_used: {}", self.stats.reserved_used)?;
-        writelncrlf!(f, "  claimed_pages: {}", self.stats.claimed_pages)?;
-        writelncrlf!(f, "  retired_pages: {}", self.stats.retired_pages)?;
-        writelncrlf!(f, "  reclaimed_pages: {}", self.stats.reclaimed_pages)?;
-        Ok(())
+        writelncrlf!(
+            f,
+            concat!(
+                "Bucket Range: {:x?}\r\n",
+                "Allocation Stats:\r\n",
+                "  pool_allocation_calls: {}\r\n",
+                "  pool_free_calls: {}\r\n",
+                "  page_allocation_calls: {}\r\n",
+                "  page_free_calls: {}\r\n",
+                "  reserved_size: {}\r\n",
+                "  reserved_used: {}\r\n",
+                "  claimed_pages: {}\r\n",
+                "  retired_pages: {}\r\n",
+                "  reclaimed_pages: {}"
+            ),
+            self.reserved_range,
+            self.stats.pool_allocation_calls,
+            self.stats.pool_free_calls,
+            self.stats.page_allocation_calls,
+            self.stats.page_free_calls,
+            self.stats.reserved_size,
+            self.stats.reserved_used,
+            self.stats.claimed_pages,
+            self.stats.retired_pages,
+            self.stats.reclaimed_pages
+        )
     }
 }
 
@@ -1496,6 +1509,32 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn test_fixed_size_block_allocator_display() {
+        let mut allocator = FixedSizeBlockAllocator::new(efi::BOOT_SERVICES_DATA, UEFI_PAGE_SIZE);
+        allocator.reserved_range = Some(0x1000..0x9000);
+        allocator.stats.pool_allocation_calls = 1;
+        allocator.stats.pool_free_calls = 2;
+        allocator.stats.page_allocation_calls = 3;
+        allocator.stats.page_free_calls = 4;
+        allocator.stats.reserved_size = 5;
+        allocator.stats.reserved_used = 6;
+        allocator.stats.claimed_pages = 7;
+        allocator.stats.retired_pages = 8;
+        allocator.stats.reclaimed_pages = 9;
+        assert_eq!(
+            std::format!("{allocator}"),
+            concat!(
+                "Memory Type: 4\r\nAllocation Ranges:\r\nBucket Range: Some(1000..9000)\r\n",
+                "Allocation Stats:\r\n",
+                "  pool_allocation_calls: 1\r\n  pool_free_calls: 2\r\n",
+                "  page_allocation_calls: 3\r\n  page_free_calls: 4\r\n",
+                "  reserved_size: 5\r\n  reserved_used: 6\r\n",
+                "  claimed_pages: 7\r\n  retired_pages: 8\r\n  reclaimed_pages: 9\r\n"
+            )
+        );
+    }
 
     fn init_gcd(gcd: &SpinLockedGcd, size: usize) -> u64 {
         // SAFETY: Resetting the test GCD is safe in a test.

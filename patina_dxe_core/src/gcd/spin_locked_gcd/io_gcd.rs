@@ -509,8 +509,10 @@ impl IoGCD {
 
 impl Display for IoGCD {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        writelncrlf!(f, "GCDIoType  Range                            ")?;
-        writelncrlf!(f, "========== =================================")?;
+        writelncrlf!(
+            f,
+            "GCDIoType  Range                            \r\n========== ================================="
+        )?;
 
         let blocks = &self.io_blocks;
         let mut current = blocks.first_idx();
