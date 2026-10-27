@@ -32,7 +32,7 @@ jobs:
 
   post-process:
     if: github.event_name == 'workflow_dispatch'
-    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidationPost.yml@e6c01da78ae1292381fe053a02379b17ba11a12d
+    uses: Javagedes/patina-devops/.github/workflows/PatinaQemuPrValidationPost.yml@418b3c2cf71f867ebd8f48e3cfdad04b4b9b32b7
     with:
       triggering-run-id: ${{ fromJSON(inputs.triggering-run-id || '0') }}
       conclusion: success
