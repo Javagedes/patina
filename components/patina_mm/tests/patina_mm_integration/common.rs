@@ -21,3 +21,15 @@ pub use framework::*;
 pub use handlers::*;
 pub use message_parser::*;
 pub use real_component_framework::*;
+
+pub fn mock_tpl_service()
+-> patina::component::service::Service<dyn patina::component::service::uefi_services::tpl::TplServices> {
+    use patina::component::service::{
+        Service,
+        uefi_services::tpl::{MockTplServices, PreviousTpl},
+    };
+    let mut tpl = MockTplServices::new();
+    tpl.expect_raise_tpl().returning(|_| PreviousTpl::from_raw(4));
+    tpl.expect_restore_tpl().returning(|_| ());
+    Service::mock(Box::new(tpl))
+}

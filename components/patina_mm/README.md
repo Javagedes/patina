@@ -45,6 +45,8 @@ and `SwMmiTrigger` services for consumption by components throughout the dispatc
 - Register `MmCommunicationConfiguration` to set platform-specific MM parameters.
 - Add `SwMmiManager` so the software MMI trigger service can be produced for other Patina components to consume.
 - Add `MmCommunicator` to expose the `MmCommunication` service to other Patina components.
+- Register `Service<dyn TplServices>` for `MmCommunicator` and supply a clone when constructing each
+  `CommunicateBuffer` (`new`, `from_raw_parts`, or `from_firmware_region`).
 - Optionally provide a `PlatformMmControl` implementation when the platform needs to clear or program hardware state
   before MM interrupts are triggered.
 
@@ -95,6 +97,29 @@ impl ComponentInfo for ExamplePlatform {
 ```
 
 ## Service Usage guidance
+
+### Shared communication buffers
+
+`CommunicateBuffer` is a shared handle, not a shallow copy of a raw pointer. Cloning the configuration or a
+buffer shares a `TplMutex` protecting the RAM, optional status mailbox, enabled state, recipient, and message length.
+`MmCommunicator` holds this guard through request setup, MM execution, and response copying, even when separate
+communicators use aliases of the same buffer. Contention or reentrant communication returns `Status::Busy`;
+callers may retry after the active transaction completes.
+
+Direct buffer operations require `buffer.try_lock()`. The returned `CommunicateBufferAccess` cannot be cloned;
+borrowed header GUIDs cannot escape its guard. Custom `MmExecutor` implementations must be `Send + Sync` and
+receive `&mut CommunicateBufferAccess`, so they operate within the same transaction. Host tests use
+`MmCommunicator::with_executor(executor, tpl_services)`.
+
+Firmware constructors transfer exclusive ownership of static normal RAM, not MMIO. Buffer and mailbox must not
+overlap. Firmware may access them only synchronously during MM execution. Never construct independent handles from
+the same raw addresses: clone the original handle instead. Protocol notifications store only the latest region
+description. The next communication call replaces the region in place under the existing transaction lock,
+so every clone observes the replacement without a registry or retained buffer history. Busy buffers retain
+their pending update for a later call. Exact repeats preserve the existing region; other overlaps are rejected.
+Buffer size and address must be read through the access guard, since updates can change them.
+Enabling updates requires an existing configured buffer matching `updatable_buffer_id`;
+otherwise component initialization returns `NotFound`.
 
 Below is example usage of the `MmCommunication` service for component writers who wish to use this functionality in
 their Patina component. If you are looking for a real world example, please refer to the [QemuQ35MmTest](https://github.com/OpenDevicePartnership/patina-dxe-core-qemu/blob/main/src/q35/component/service/mm_test.rs)

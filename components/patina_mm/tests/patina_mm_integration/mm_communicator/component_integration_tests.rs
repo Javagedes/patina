@@ -36,8 +36,8 @@ fn test_mm_communicator_component_initialization() {
     // Set up required configuration with communication buffers
     let config = MmCommunicationConfiguration {
         comm_buffers: vec![
-            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0),
-            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 2048]))), 1),
+            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0, mock_tpl_service()),
+            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 2048]))), 1, mock_tpl_service()),
         ],
         ..Default::default()
     };
@@ -90,7 +90,7 @@ fn test_mm_communicator_dependency_injection() {
 
     // Set up all required dependencies
     let config = MmCommunicationConfiguration {
-        comm_buffers: vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 5)],
+        comm_buffers: vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 5, mock_tpl_service())],
         ..Default::default()
     };
     storage.add_config(config);

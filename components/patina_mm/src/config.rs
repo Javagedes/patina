@@ -18,12 +18,19 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use alloc::vec::Vec;
-use core::{fmt, pin::Pin, ptr::NonNull};
+use alloc::{sync::Arc, vec::Vec};
+use core::{fmt, pin::Pin};
 
 use patina::{
-    BinaryGuid, Guid, UEFI_PAGE_MASK, management_mode::MmCommBufferStatus,
-    pi::protocol::communication::EfiMmCommunicateHeader, writelncrlf,
+    BinaryGuid, Guid, UEFI_PAGE_MASK,
+    component::service::{Service, uefi_services::tpl::TplServices},
+    management_mode::MmCommBufferStatus,
+    pi::protocol::communication::EfiMmCommunicateHeader,
+    uefi::{
+        boot_services::tpl::Tpl,
+        tpl_mutex::{TplMutex, TplMutexGuard},
+    },
+    writelncrlf,
 };
 
 /// Management Mode (MM) Configuration
@@ -74,13 +81,16 @@ impl fmt::Display for MmCommunicationConfiguration {
             writelncrlf!(f, "    <none>")
         } else {
             for buffer in &self.comm_buffers {
-                writelncrlf!(
-                    f,
-                    "    Buffer {:#04X}: ptr={:p}, len=0x{:X}",
-                    buffer.id(),
-                    buffer.as_ptr(),
-                    buffer.len(),
-                )?;
+                match buffer.try_lock() {
+                    Ok(mut access) => writelncrlf!(
+                        f,
+                        "    Buffer {:#04X}: ptr={:p}, len=0x{:X}",
+                        buffer.id(),
+                        access.as_ptr(),
+                        access.len(),
+                    )?,
+                    Err(_) => writelncrlf!(f, "    Buffer {:#04X}: busy", buffer.id())?,
+                }
             }
             Ok(())
         }
@@ -90,6 +100,8 @@ impl fmt::Display for MmCommunicationConfiguration {
 /// MM Communicator Service Status Codes
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CommunicateBufferStatus {
+    /// Another alias is already accessing this buffer.
+    Busy,
     /// The buffer is too small to hold the header.
     TooSmallForHeader,
     /// The buffer is too small to hold the message.
@@ -106,11 +118,13 @@ pub enum CommunicateBufferStatus {
 
 /// Management Mode (MM) Communicate Buffer
 ///
-/// A buffer used for communication between the MM handler and the caller.
-#[derive(Clone)]
-pub struct CommunicateBuffer {
+/// Exclusive access to communication RAM, mailbox, and tracked message state.
+///
+/// Obtained from [`CommunicateBuffer::try_lock`]. Borrowed data cannot outlive
+/// the transaction guard. This type cannot be cloned.
+pub struct CommunicateBufferAccess {
     /// Pointer to the buffer in memory.
-    buffer: NonNull<[u8]>,
+    buffer: &'static mut [u8],
     /// ID of the buffer.
     id: u8,
     /// Length of the total buffer in bytes.
@@ -125,25 +139,183 @@ pub struct CommunicateBuffer {
     /// Pointer to the MM communication buffer status mailbox structure.
     /// This is used to communicate status between DXE and MM environments.
     /// If None, this is a buffer without mailbox status support.
-    status_mailbox: Option<NonNull<MmCommBufferStatus>>,
+    status_mailbox: Option<&'static mut MmCommBufferStatus>,
+}
+
+/// A shared communication buffer. Clones share both memory and transaction state.
+///
+/// Hold [`Self::try_lock`] throughout a complete request, MM execution, and response.
+/// A competing or reentrant transaction fails rather than accessing aliased memory.
+#[derive(Clone)]
+pub struct CommunicateBuffer {
+    inner: Arc<TplMutex<CommunicateBufferAccess, Service<dyn TplServices>>>,
+    id: u8,
 }
 
 impl CommunicateBuffer {
+    /// Takes exclusive ownership of normal RAM for a shared communication buffer.
+    pub fn new(buffer: Pin<&'static mut [u8]>, id: u8, tpl: Service<dyn TplServices>) -> Self {
+        Self::from_access(CommunicateBufferAccess::new(buffer, id), tpl)
+    }
+
+    fn from_access(access: CommunicateBufferAccess, tpl: Service<dyn TplServices>) -> Self {
+        let id = access.id;
+        Self { inner: Arc::new(TplMutex::new(tpl, Tpl::NOTIFY, access)), id }
+    }
+
+    /// Creates a shared buffer from an exclusively owned firmware RAM region.
+    ///
+    /// # Safety
+    /// The region must be valid, writable, static normal RAM, not MMIO, and must
+    /// remain exclusively owned by this handle and its clones. MM may access it
+    /// only synchronously during execution while the transaction guard is held.
+    pub unsafe fn from_raw_parts(
+        buffer: *mut u8,
+        size: usize,
+        id: u8,
+        tpl: Service<dyn TplServices>,
+    ) -> Result<Self, CommunicateBufferStatus> {
+        // SAFETY: The caller transfers exclusive ownership of the region.
+        let access = unsafe { CommunicateBufferAccess::from_raw_parts(buffer, size, id)? };
+        Ok(Self::from_access(access, tpl))
+    }
+
+    /// Creates a shared buffer and optional mailbox from firmware normal RAM.
+    ///
+    /// # Safety
+    /// The buffer and mailbox must be valid, writable, static, nonoverlapping
+    /// normal RAM exclusively owned by this handle and its clones. MM accesses
+    /// must occur only synchronously while the transaction guard is held.
+    pub unsafe fn from_firmware_region(
+        address: u64,
+        size_bytes: usize,
+        buffer_id: u8,
+        status_mailbox_address: Option<u64>,
+        tpl: Service<dyn TplServices>,
+    ) -> Result<Self, CommunicateBufferStatus> {
+        // SAFETY: The caller transfers exclusive ownership of both regions.
+        let access = unsafe {
+            CommunicateBufferAccess::from_firmware_region(address, size_bytes, buffer_id, status_mailbox_address)?
+        };
+        Ok(Self::from_access(access, tpl))
+    }
+
+    /// Acquires exclusive access to the buffer, mailbox, and tracked metadata.
+    ///
+    /// Returns [`CommunicateBufferStatus::Busy`] if any clone is in use.
+    pub fn try_lock(
+        &self,
+    ) -> Result<TplMutexGuard<'_, CommunicateBufferAccess, Service<dyn TplServices>>, CommunicateBufferStatus> {
+        self.inner.try_lock().map_err(|()| CommunicateBufferStatus::Busy)
+    }
+
+    /// Returns the immutable buffer ID.
+    pub fn id(&self) -> u8 {
+        self.id
+    }
+}
+
+impl fmt::Debug for CommunicateBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommunicateBuffer").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+/// Creates TPL services for host tests exercising communication guards.
+pub(crate) fn mock_tpl_service() -> Service<dyn TplServices> {
+    use patina::component::service::uefi_services::tpl::{MockTplServices, PreviousTpl};
+    let mut tpl = MockTplServices::new();
+    tpl.expect_raise_tpl().returning(|_| PreviousTpl::from_raw(4));
+    tpl.expect_restore_tpl().returning(|_| ());
+    Service::mock(alloc::boxed::Box::new(tpl))
+}
+
+impl CommunicateBufferAccess {
     /// The minimum required buffer size to hold a communication header.
     const MINIMUM_BUFFER_SIZE: usize = EfiMmCommunicateHeader::size();
 
     /// The offset in the buffer where the message starts.
     const MESSAGE_START_OFFSET: usize = EfiMmCommunicateHeader::size();
 
+    pub(crate) fn validate_firmware_region(
+        address: u64,
+        size: usize,
+        mailbox: Option<u64>,
+    ) -> Result<(), CommunicateBufferStatus> {
+        let address = usize::try_from(address).map_err(|_| CommunicateBufferStatus::AddressValidationFailed)?;
+        let end = address.checked_add(size).ok_or(CommunicateBufferStatus::AddressValidationFailed)?;
+        if size < Self::MINIMUM_BUFFER_SIZE {
+            return Err(CommunicateBufferStatus::TooSmallForHeader);
+        }
+        if address == 0 {
+            return Err(CommunicateBufferStatus::NoBuffer);
+        }
+        if address & UEFI_PAGE_MASK != 0 {
+            return Err(CommunicateBufferStatus::NotAligned);
+        }
+        if size > isize::MAX as usize {
+            return Err(CommunicateBufferStatus::AddressValidationFailed);
+        }
+        if let Some(mailbox) = mailbox {
+            let mailbox = usize::try_from(mailbox).map_err(|_| CommunicateBufferStatus::AddressValidationFailed)?;
+            let mailbox_end = mailbox
+                .checked_add(core::mem::size_of::<MmCommBufferStatus>())
+                .ok_or(CommunicateBufferStatus::AddressValidationFailed)?;
+            if mailbox == 0 || (mailbox < end && address < mailbox_end) {
+                return Err(CommunicateBufferStatus::AddressValidationFailed);
+            }
+        }
+        Ok(())
+    }
+
+    /// Replaces the region while retaining the transaction lock shared by every handle.
+    ///
+    /// # Safety
+    /// New regions must satisfy `CommunicateBuffer::from_firmware_region`. An exact
+    /// repeat of the current region is allowed and does not recreate references.
+    pub(crate) unsafe fn replace_firmware_region(
+        &mut self,
+        address: u64,
+        size: usize,
+        mailbox: u64,
+    ) -> Result<(), CommunicateBufferStatus> {
+        Self::validate_firmware_region(address, size, Some(mailbox))?;
+        let address = address as usize;
+        let mailbox = mailbox as usize;
+        let old_address = self.buffer.as_ptr() as usize;
+        let old_mailbox = self.status_mailbox.as_deref().map(|status| core::ptr::from_ref(status) as usize);
+        if address == old_address && size == self.length && old_mailbox == Some(mailbox) {
+            self.enable();
+            return Ok(());
+        }
+
+        let overlaps = |start: usize, length: usize| {
+            (address < start + length && start < address + size)
+                || (mailbox < start + length && start < mailbox + core::mem::size_of::<MmCommBufferStatus>())
+        };
+        if overlaps(old_address, self.length)
+            || old_mailbox.is_some_and(|start| overlaps(start, core::mem::size_of::<MmCommBufferStatus>()))
+        {
+            return Err(CommunicateBufferStatus::AddressValidationFailed);
+        }
+
+        // SAFETY: The caller guarantees exclusive firmware RAM. Validation above
+        // rules out overlap with the references still held by the current region.
+        // The replacement stays behind this same lock, so no clone retains old references.
+        *self = unsafe { Self::from_firmware_region(address as u64, size, self.id, Some(mailbox as u64))? };
+        Ok(())
+    }
+
     /// Creates a new `CommunicateBuffer` with the given buffer and ID.
-    pub fn new(mut buffer: Pin<&'static mut [u8]>, id: u8) -> Self {
+    fn new(mut buffer: Pin<&'static mut [u8]>, id: u8) -> Self {
         let length = buffer.len();
         log::debug!(target: "mm_comm", "Creating new CommunicateBuffer: id={id}, size=0x{length:X}");
         buffer.fill(0);
 
-        let ptr: NonNull<[u8]> = NonNull::from_mut(Pin::into_inner(buffer));
+        let ptr = Pin::into_inner(buffer);
 
-        log::trace!(target: "mm_comm", "CommunicateBuffer {id} created successfully at address {ptr:p}");
+        log::trace!(target: "mm_comm", "CommunicateBuffer {id} created successfully at address {:p}", ptr.as_ptr());
         Self {
             buffer: ptr,
             id,
@@ -158,15 +330,13 @@ impl CommunicateBuffer {
     /// Returns a reference to the buffer as a slice of bytes.
     /// This is only used for internal operations.
     fn as_slice(&self) -> &[u8] {
-        // SAFETY: The pointer was validated during CommunicateBuffer construction
-        unsafe { self.buffer.as_ref() }
+        self.buffer
     }
 
     /// Returns a mutable reference to the buffer as a slice of bytes.
     /// This is only used for internal operations.
     fn as_slice_mut(&mut self) -> &mut [u8] {
-        // SAFETY: The pointer was validated during CommunicateBuffer construction
-        unsafe { self.buffer.as_mut() }
+        self.buffer
     }
 
     /// Creates a new `CommunicateBuffer` from a raw pointer and size.
@@ -180,27 +350,12 @@ impl CommunicateBuffer {
     /// - The buffer must not be used by any other code.
     /// - The buffer must be page (4k) aligned so paging attributes can be applied to it.
     /// - The buffer size must be sufficient to hold at least the MM communication header.
-    pub unsafe fn from_raw_parts(buffer: *mut u8, size: usize, id: u8) -> Result<Self, CommunicateBufferStatus> {
+    unsafe fn from_raw_parts(buffer: *mut u8, size: usize, id: u8) -> Result<Self, CommunicateBufferStatus> {
         log::trace!(target: "mm_comm", "Creating CommunicateBuffer from raw parts: id={id}, ptr={buffer:p}, size=0x{size:X}");
 
-        if size < Self::MINIMUM_BUFFER_SIZE {
-            log::error!(target: "mm_comm", "Buffer {} too small: size=0x{:X}, minimum=0x{:X}", id, size, Self::MINIMUM_BUFFER_SIZE);
-            return Err(CommunicateBufferStatus::TooSmallForHeader);
-        }
-
-        if buffer.is_null() {
-            log::error!(target: "mm_comm", "Buffer {id} has null pointer");
-            return Err(CommunicateBufferStatus::NoBuffer);
-        }
-
-        if (buffer as usize) & UEFI_PAGE_MASK != 0 {
-            log::error!(target: "mm_comm", "Buffer {} not page aligned: address=0x{:X}, mask=0x{:X}", id, buffer as usize, UEFI_PAGE_MASK);
-            return Err(CommunicateBufferStatus::NotAligned);
-        }
-
-        if buffer as usize > usize::MAX - size {
-            log::error!(target: "mm_comm", "Buffer {} address overflow: ptr=0x{:X}, size=0x{:X}", id, buffer as usize, size);
-            return Err(CommunicateBufferStatus::AddressValidationFailed);
+        if let Err(error) = Self::validate_firmware_region(buffer as u64, size, None) {
+            log::error!(target: "mm_comm", "Invalid buffer {id}: ptr={buffer:p}, size=0x{size:X}, error={error:?}");
+            return Err(error);
         }
 
         log::debug!(target: "mm_comm", "CommunicateBuffer {id} validation passed, creating buffer");
@@ -232,19 +387,16 @@ impl CommunicateBuffer {
     /// - The memory is not used by other components concurrently
     /// - The firmware has guaranteed the memory region is stable and properly mapped
     /// - If provided, the `status_mailbox_address` points to a valid `MmCommBufferStatus` structure
-    pub unsafe fn from_firmware_region(
+    unsafe fn from_firmware_region(
         address: u64,
         size_bytes: usize,
         buffer_id: u8,
         status_mailbox_address: Option<u64>,
     ) -> Result<Self, CommunicateBufferStatus> {
+        Self::validate_firmware_region(address, size_bytes, status_mailbox_address)?;
         // Check that the address provided is addressable on this system.
         // A 32-bit system will fail this if the address is over 4GB.
         let address = usize::try_from(address).map_err(|_| CommunicateBufferStatus::AddressValidationFailed)?;
-
-        if address.checked_add(size_bytes).is_none() {
-            return Err(CommunicateBufferStatus::AddressValidationFailed);
-        }
 
         let ptr = address as *mut u8;
 
@@ -253,17 +405,21 @@ impl CommunicateBuffer {
             "Creating CommunicateBuffer from firmware region: addr=0x{address:X}, size=0x{size_bytes:X}, id={buffer_id}"
         );
 
-        // SAFETY: Caller guarantees firmware memory region is valid and stable per the function safety contract
-        let mut buffer = unsafe { Self::from_raw_parts(ptr, size_bytes, buffer_id)? };
-
-        // Set up the status mailbox if provided
-        if let Some(status_addr) = status_mailbox_address {
+        let mailbox = if let Some(status_addr) = status_mailbox_address {
             let status_addr =
                 usize::try_from(status_addr).map_err(|_| CommunicateBufferStatus::AddressValidationFailed)?;
             let status_ptr = status_addr as *mut MmCommBufferStatus;
 
-            // SAFETY: Caller guarantees the status mailbox address is valid
-            buffer.status_mailbox = NonNull::new(status_ptr);
+            // SAFETY: Caller guarantees exclusive, static normal RAM. The mailbox
+            // was checked for null, address overflow, and overlap with the buffer.
+            Some(unsafe { &mut *status_ptr })
+        } else {
+            None
+        };
+        // SAFETY: Caller guarantees firmware memory region is valid and stable per the function safety contract.
+        let mut buffer = unsafe { Self::from_raw_parts(ptr, size_bytes, buffer_id)? };
+        buffer.status_mailbox = mailbox;
+        if let Some(status_addr) = status_mailbox_address {
             log::info!(target: "mm_comm", "Buffer {buffer_id} status mailbox configured at address 0x{status_addr:X}");
         }
 
@@ -297,6 +453,10 @@ impl CommunicateBuffer {
         self.enabled = false;
     }
 
+    pub(crate) fn enable(&mut self) {
+        self.enabled = true;
+    }
+
     /// Returns a pointer to the underlying buffer memory.
     ///
     /// This method provides controlled access to the buffer pointer for operations
@@ -311,8 +471,8 @@ impl CommunicateBuffer {
     /// - Write beyond the buffer boundaries (use `len()` to check size)
     /// - Modify buffer contents without proper coordination with buffer state
     /// - Use the pointer after the buffer has been dropped
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.buffer.as_ptr().cast::<u8>()
+    pub fn as_ptr(&mut self) -> *mut u8 {
+        self.buffer.as_mut_ptr()
     }
 
     /// Sets the communication buffer status to indicate a valid buffer before triggering MMI.
@@ -325,13 +485,9 @@ impl CommunicateBuffer {
     /// - `Ok(())` if the status was set successfully
     /// - `Err(CommunicateBufferStatus)` if this buffer has no status mailbox configured
     pub fn set_comm_buffer_valid(&mut self) -> Result<(), CommunicateBufferStatus> {
-        if let Some(mut status_ptr) = self.status_mailbox {
-            // SAFETY: The status mailbox pointer was validated during buffer creation
-            unsafe {
-                let status = status_ptr.as_mut();
-                status.is_comm_buffer_valid = 1; // TRUE
-                log::trace!(target: "mm_comm", "Buffer {} status mailbox: IsCommBufferValid=TRUE", self.id);
-            }
+        if let Some(status) = self.status_mailbox.as_deref_mut() {
+            status.is_comm_buffer_valid = 1; // TRUE
+            log::trace!(target: "mm_comm", "Buffer {} status mailbox: IsCommBufferValid=TRUE", self.id);
             Ok(())
         } else {
             log::error!(target: "mm_comm", "Buffer {} has no status mailbox configured", self.id);
@@ -348,25 +504,21 @@ impl CommunicateBuffer {
     /// - `Ok((return_status, return_buffer_size))` if the status was read successfully
     /// - `Err(CommunicateBufferStatus)` if this buffer has no status mailbox configured
     pub fn get_mm_return_status(&self) -> Result<(u64, u64), CommunicateBufferStatus> {
-        if let Some(status_ptr) = self.status_mailbox {
-            // SAFETY: The status mailbox pointer was validated during buffer creation
-            unsafe {
-                let status = status_ptr.as_ref();
-                // Copy packed fields to avoid unaligned reference errors
-                let is_valid = status.is_comm_buffer_valid;
-                let return_status = status.return_status;
-                let return_buffer_size = status.return_buffer_size;
+        if let Some(status) = self.status_mailbox.as_deref() {
+            // Copy packed fields to avoid unaligned reference errors
+            let is_valid = status.is_comm_buffer_valid;
+            let return_status = status.return_status;
+            let return_buffer_size = status.return_buffer_size;
 
-                log::trace!(
-                    target: "mm_comm",
-                    "Buffer {} return status: IsCommBufferValid={}, ReturnStatus=0x{:X}, ReturnBufferSize=0x{:X}",
-                    self.id,
-                    is_valid,
-                    return_status,
-                    return_buffer_size
-                );
-                Ok((return_status, return_buffer_size))
-            }
+            log::trace!(
+                target: "mm_comm",
+                "Buffer {} return status: IsCommBufferValid={}, ReturnStatus=0x{:X}, ReturnBufferSize=0x{:X}",
+                self.id,
+                is_valid,
+                return_status,
+                return_buffer_size
+            );
+            Ok((return_status, return_buffer_size))
         } else {
             log::error!(target: "mm_comm", "Buffer {} has no status mailbox configured", self.id);
             Err(CommunicateBufferStatus::NoBuffer)
@@ -376,6 +528,14 @@ impl CommunicateBuffer {
     /// Returns whether this buffer has a status mailbox configured.
     pub fn has_status_mailbox(&self) -> bool {
         self.status_mailbox.is_some()
+    }
+
+    /// Sets the result produced by an MM executor while exclusive access is held.
+    pub fn set_mm_return_status(&mut self, status: u64, size: u64) -> Result<(), CommunicateBufferStatus> {
+        let mailbox = self.status_mailbox.as_deref_mut().ok_or(CommunicateBufferStatus::NoBuffer)?;
+        mailbox.return_status = status;
+        mailbox.return_buffer_size = size;
+        Ok(())
     }
 
     /// Resets the communication buffer by clearing all data and resetting internal state.
@@ -608,7 +768,7 @@ impl CommunicateBuffer {
 }
 
 #[cfg_attr(coverage, coverage(off))]
-impl fmt::Debug for CommunicateBuffer {
+impl fmt::Debug for CommunicateBufferAccess {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writelncrlf!(f, "CommunicateBuffer(id: 0x{:X}. len: 0x{:X})", self.id(), self.len())?;
         for (i, chunk) in self.as_slice().chunks(16).enumerate() {
@@ -746,10 +906,62 @@ impl AcpiBase {
 #[cfg(test)]
 #[cfg_attr(coverage, coverage(off))]
 mod tests {
+    use super::CommunicateBufferAccess as CommunicateBuffer;
     use super::*;
 
     #[repr(align(4096))]
     struct AlignedBuffer([u8; 64]);
+
+    #[test]
+    fn test_communicate_buffer_aliases_serialize_and_share_metadata() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<super::CommunicateBuffer>();
+        assert_send_sync::<MmCommunicationConfiguration>();
+
+        let buffer = super::CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 128]))), 1, mock_tpl_service());
+        let alias = buffer.clone();
+        let mut access = buffer.try_lock().unwrap();
+        let guid = Guid::try_from_string("12345678-1234-5678-90AB-CDEF01234567").unwrap();
+        access.set_message_info(guid).unwrap();
+        access.set_message(b"shared").unwrap();
+
+        std::thread::spawn(move || {
+            assert!(matches!(alias.try_lock(), Err(CommunicateBufferStatus::Busy)));
+        })
+        .join()
+        .unwrap();
+        drop(access);
+        assert_eq!(buffer.clone().try_lock().unwrap().get_message().unwrap(), b"shared");
+        buffer.try_lock().unwrap().disable();
+        assert!(!buffer.clone().try_lock().unwrap().is_enabled());
+    }
+
+    #[test]
+    fn test_communicate_buffer_mailbox_aliases_and_firmware_updates_share_lock() {
+        #[repr(align(4096))]
+        struct Page([u8; 4096]);
+        let page = Box::leak(Box::new(Page([0; 4096])));
+        let mailbox = Box::leak(Box::new(MmCommBufferStatus::new()));
+        let address = page.0.as_mut_ptr() as u64;
+        let status_address = core::ptr::from_mut(mailbox) as u64;
+        // SAFETY: Both allocations are exclusive static normal RAM and do not overlap.
+        let buffer = unsafe {
+            super::CommunicateBuffer::from_firmware_region(address, 4096, 1, Some(status_address), mock_tpl_service())
+        }
+        .unwrap();
+        let alias = buffer.clone();
+        let mut access = buffer.try_lock().unwrap();
+        // SAFETY: Repeating the current description preserves the existing references.
+        unsafe { access.replace_firmware_region(address, 4096, status_address) }.unwrap();
+        access.set_comm_buffer_valid().unwrap();
+        access.set_mm_return_status(7, 42).unwrap();
+        assert!(matches!(alias.try_lock(), Err(CommunicateBufferStatus::Busy)));
+        drop(access);
+        assert_eq!(alias.try_lock().unwrap().get_mm_return_status().unwrap(), (7, 42));
+        // SAFETY: Only a rejected overlapping description is supplied; no memory is accessed.
+        let overlap = unsafe { buffer.try_lock().unwrap().replace_firmware_region(address, 4096, status_address + 1) };
+        assert!(matches!(overlap, Err(CommunicateBufferStatus::AddressValidationFailed)));
+    }
 
     #[test]
     fn test_set_message_info_success() {
@@ -1166,8 +1378,8 @@ mod tests {
         let buffer1: &'static mut [u8; 64] = Box::leak(Box::new([0u8; 64]));
         let buffer2: &'static mut [u8; 128] = Box::leak(Box::new([0u8; 128]));
 
-        let comm_buffer1 = CommunicateBuffer::new(Pin::new(buffer1), 1);
-        let comm_buffer2 = CommunicateBuffer::new(Pin::new(buffer2), 2);
+        let comm_buffer1 = super::CommunicateBuffer::new(Pin::new(buffer1), 1, mock_tpl_service());
+        let comm_buffer2 = super::CommunicateBuffer::new(Pin::new(buffer2), 2, mock_tpl_service());
 
         let populated_config = MmCommunicationConfiguration {
             acpi_base: AcpiBase::Io(0x1234),

@@ -16,25 +16,26 @@
 mod comm_buffer_update;
 
 use crate::{
-    config::{CommunicateBuffer, MmCommunicationConfiguration},
+    config::{CommunicateBuffer, CommunicateBufferAccess, MmCommunicationConfiguration},
     service::SwMmiTrigger,
 };
 use patina::{
     Guid,
     component::{
         Storage, component,
-        service::{IntoService, Service, uefi_services::protocol::ProtocolServices},
+        service::{
+            IntoService, Service,
+            uefi_services::{protocol::ProtocolServices, tpl::TplServices},
+        },
     },
     pi::protocol::communication::EfiMmCommunicateHeader,
+    uefi::{boot_services::tpl::Tpl, tpl_mutex::TplMutex},
     writelncrlf,
 };
 
 use alloc::vec::Vec;
 
-use core::{
-    cell::RefCell,
-    fmt::{self, Debug},
-};
+use core::fmt::{self, Debug};
 
 #[cfg(any(test, feature = "mockall"))]
 use mockall::automock;
@@ -44,7 +45,7 @@ use mockall::automock;
 /// This trait abstracts the actual MM execution logic so testing can
 /// be performed without invoking real MM transitions.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait MmExecutor {
+pub trait MmExecutor: Send + Sync {
     /// Execute MM with the given communication buffer.
     ///
     /// This method triggers the MM execution and allows the MM handlers
@@ -56,7 +57,7 @@ pub trait MmExecutor {
     /// # Returns
     /// - `Ok(())` if MM execution completed successfully
     /// - `Err(Status)` if MM execution failed
-    fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status>;
+    fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status>;
 }
 
 /// Real MM Executor that uses the SW MMI trigger service
@@ -77,7 +78,7 @@ impl RealMmExecutor {
 
 impl MmExecutor for RealMmExecutor {
     #[cfg_attr(coverage, coverage(off))]
-    fn execute_mm(&self, _comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+    fn execute_mm(&self, _comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
         log::debug!(target: "mm_comm", "Triggering SW MMI for MM communication");
         self.sw_mmi_trigger_service.trigger_sw_mmi(0xFF, 0).map_err(|err| {
             log::error!(target: "mm_comm", "SW MMI trigger failed: {err:?}");
@@ -89,6 +90,8 @@ impl MmExecutor for RealMmExecutor {
 /// MM Communicator Service Status Codes
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Status {
+    /// A concurrent or reentrant communication is already using shared state.
+    Busy,
     /// No communication buffers are available.
     NoCommBuffer,
     /// The specified communication buffer was not found.
@@ -122,7 +125,7 @@ pub trait MmCommunication {
     ///
     /// # Returns
     ///
-    /// - `Ok(&'static [u8])`: A reference to the response data from the MM handler.
+    /// - `Ok(Vec<u8>)`: An owned copy of the response data from the MM handler.
     /// - `Err(Status)`: An error status indicating the failure reason.
     ///
     /// # Example
@@ -159,7 +162,7 @@ pub trait MmCommunication {
 #[service(dyn MmCommunication)]
 pub struct MmCommunicator<E: MmExecutor + 'static = RealMmExecutor> {
     /// Configured communication buffers
-    comm_buffers: RefCell<Vec<CommunicateBuffer>>,
+    comm_buffers: TplMutex<Vec<CommunicateBuffer>, Service<dyn TplServices>>,
     /// The MM Executor actively handling MM execution
     mm_executor: Option<E>,
     /// Context shared with protocol callback for pending buffer updates
@@ -168,22 +171,33 @@ pub struct MmCommunicator<E: MmExecutor + 'static = RealMmExecutor> {
 
 impl<E: MmExecutor + 'static> MmCommunicator<E> {
     /// Create a new `MmCommunicator` instance with a custom MM executor.
-    pub fn with_executor(executor: E) -> Self {
-        Self { comm_buffers: RefCell::new(Vec::new()), mm_executor: Some(executor), notify_context: None }
+    pub fn with_executor(executor: E, tpl: Service<dyn TplServices>) -> Self {
+        Self {
+            comm_buffers: TplMutex::new(tpl, Tpl::NOTIFY, Vec::new()),
+            mm_executor: Some(executor),
+            notify_context: None,
+        }
     }
 
     /// Set communication buffers for testing purposes.
+    ///
+    /// Returns [`Status::Busy`] if communication is active, or
+    /// [`Status::SwMmiServiceNotAvailable`] before executor initialization.
     #[cfg_attr(coverage, coverage(off))]
-    pub fn set_test_comm_buffers(&self, buffers: Vec<CommunicateBuffer>) {
-        *self.comm_buffers.borrow_mut() = buffers;
+    pub fn set_test_comm_buffers(&self, buffers: Vec<CommunicateBuffer>) -> Result<(), Status> {
+        if self.mm_executor.is_none() {
+            return Err(Status::SwMmiServiceNotAvailable);
+        }
+        *self.comm_buffers.try_lock().map_err(|()| Status::Busy)? = buffers;
+        Ok(())
     }
 }
 
 #[component]
 impl MmCommunicator {
-    /// Create a new `MmCommunicator` instance.
+    /// Creates a component awaiting TPL and MM services from its entry point.
     pub fn new() -> Self {
-        Self { comm_buffers: RefCell::new(Vec::new()), mm_executor: None, notify_context: None }
+        Self { comm_buffers: TplMutex::new_uninit(Tpl::NOTIFY, Vec::new()), mm_executor: None, notify_context: None }
     }
 
     /// Component entry point
@@ -192,6 +206,7 @@ impl MmCommunicator {
         storage: &mut Storage,
         sw_mmi_trigger: Service<dyn SwMmiTrigger>,
         protocols: Service<dyn ProtocolServices>,
+        tpl: Service<dyn TplServices>,
     ) -> patina::error::Result<()> {
         log::info!(target: "mm_comm", "MM Communicator entry...");
 
@@ -213,9 +228,9 @@ impl MmCommunicator {
             (config.comm_buffers.clone(), config.enable_comm_buffer_updates, config.updatable_buffer_id)
         };
 
-        self.comm_buffers = RefCell::new(comm_buffers);
+        self.comm_buffers = TplMutex::new(tpl, Tpl::NOTIFY, comm_buffers);
 
-        let buffer_count = self.comm_buffers.borrow().len();
+        let buffer_count = self.comm_buffers.lock().len();
         log::info!(target: "mm_comm", "MM Communicator initialized with {buffer_count} communication buffers");
 
         // Only setup a protocol notify callback if buffer updates are enabled and a buffer ID was given
@@ -226,7 +241,14 @@ impl MmCommunicator {
                     "MM comm buffer updates enabled for buffer ID {buffer_id}"
                 );
 
-                let context = comm_buffer_update::register_buffer_update_notify(protocols, buffer_id)?;
+                let original_buffer = self
+                    .comm_buffers
+                    .lock()
+                    .iter()
+                    .find(|buffer| buffer.id() == buffer_id)
+                    .cloned()
+                    .ok_or(patina::error::EfiError::NotFound)?;
+                let context = comm_buffer_update::register_buffer_update_notify(protocols, original_buffer, tpl)?;
 
                 // Store context reference for checking pending updates in communicate()
                 self.notify_context = Some(context);
@@ -249,9 +271,6 @@ impl MmCommunicator {
 impl<E: MmExecutor + 'static> Debug for MmCommunicator<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writelncrlf!(f, "MM Communicator:")?;
-        for buffer in self.comm_buffers.borrow().iter() {
-            writelncrlf!(f, "Comm Buffer: {buffer:?}")?;
-        }
         writelncrlf!(f, "MM Executor Set: {}", self.mm_executor.is_some())?;
         Ok(())
     }
@@ -261,13 +280,16 @@ impl<E: MmExecutor + 'static> MmCommunication for MmCommunicator<E> {
     fn communicate<'a>(&self, id: u8, data_buffer: &[u8], recipient: Guid<'a>) -> Result<Vec<u8>, Status> {
         log::debug!(target: "mm_comm", "Starting MM communication: buffer_id={}, data_size={}, recipient={:?}", id, data_buffer.len(), recipient);
 
+        if self.mm_executor.is_none() {
+            return Err(Status::SwMmiServiceNotAvailable);
+        }
+        let comm_buffers = self.comm_buffers.try_lock().map_err(|()| Status::Busy)?;
         // Check for and apply any pending buffer updates from a potential protocol callback
         if let Some(context) = self.notify_context {
-            let mut comm_buffers = self.comm_buffers.borrow_mut();
-            comm_buffer_update::apply_pending_buffer_update(context, &mut comm_buffers);
+            comm_buffer_update::apply_pending_buffer_update(context);
         }
 
-        if self.comm_buffers.borrow().is_empty() {
+        if comm_buffers.is_empty() {
             log::warn!(target: "mm_comm", "No communication buffers available");
             return Err(Status::NoCommBuffer);
         }
@@ -282,12 +304,14 @@ impl<E: MmExecutor + 'static> MmCommunication for MmCommunicator<E> {
             Status::SwMmiServiceNotAvailable
         })?;
 
-        let mut comm_buffers = self.comm_buffers.borrow_mut();
-        let comm_buffer: &mut CommunicateBuffer =
-            comm_buffers.iter_mut().find(|x| x.id() == id && x.is_enabled()).ok_or_else(|| {
-                log::warn!(target: "mm_comm", "Communication buffer not found or it is disabled: id={id}");
-                Status::CommBufferNotFound
-            })?;
+        let comm_buffer = comm_buffers.iter().rev().find(|x| x.id() == id).ok_or_else(|| {
+            log::warn!(target: "mm_comm", "Communication buffer not found or it is disabled: id={id}");
+            Status::CommBufferNotFound
+        })?;
+        let mut comm_buffer = comm_buffer.try_lock().map_err(|_| Status::Busy)?;
+        if !comm_buffer.is_enabled() {
+            return Err(Status::CommBufferNotFound);
+        }
 
         let total_required_comm_buffer_length = EfiMmCommunicateHeader::size() + data_buffer.len();
         log::trace!(target: "mm_comm", "Buffer validation: buffer_len={}, required_len={}", comm_buffer.len(), total_required_comm_buffer_length);
@@ -328,7 +352,7 @@ impl<E: MmExecutor + 'static> MmCommunication for MmCommunicator<E> {
         }
 
         log::debug!(target: "mm_comm", "Executing MM communication");
-        mm_executor.execute_mm(comm_buffer)?;
+        mm_executor.execute_mm(&mut comm_buffer)?;
 
         // Read the return status from MM if a mailbox is available
         if comm_buffer.has_status_mailbox() {
@@ -370,7 +394,7 @@ mod tests {
             communicator::{MmCommunicator, MockMmExecutor},
             sw_mmi_manager::{MockSwMmiTrigger, SwMmiManager},
         },
-        config::{CommunicateBuffer, MmCommunicationConfiguration},
+        config::{CommunicateBuffer, MmCommunicationConfiguration, mock_tpl_service},
     };
     use patina::{
         component::{
@@ -380,7 +404,7 @@ mod tests {
         management_mode::MmCommBufferStatus,
     };
 
-    use core::{cell::RefCell, pin::Pin};
+    use core::pin::Pin;
 
     use std::vec::Vec;
 
@@ -388,7 +412,7 @@ mod tests {
     struct EchoMmExecutor;
 
     impl MmExecutor for EchoMmExecutor {
-        fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+        fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
             // Get the current message data to echo back
             let request_data = comm_buffer.get_message().map_err(|_| Status::InvalidDataBuffer)?;
 
@@ -419,7 +443,7 @@ mod tests {
     }
 
     impl MmExecutor for TransformMmExecutor {
-        fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+        fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
             // Get the current message data
             let request_data = comm_buffer.get_message().map_err(|_| Status::InvalidDataBuffer)?;
 
@@ -444,6 +468,40 @@ mod tests {
     static TEST_DATA: [u8; 3] = [0x01, 0x02, 0x03];
     static TEST_RECIPIENT: patina::BinaryGuid = patina::BinaryGuid::from_string("12345678-1234-5678-1234-567890ABCDEF");
 
+    #[test]
+    fn test_mm_communicator_shared_alias_rejects_concurrent_transaction() {
+        use std::sync::{Arc, Barrier};
+        struct BlockingExecutor {
+            entered: Arc<Barrier>,
+            release: Arc<Barrier>,
+        }
+        impl MmExecutor for BlockingExecutor {
+            fn execute_mm(&self, _: &mut CommunicateBufferAccess) -> Result<(), Status> {
+                self.entered.wait();
+                self.release.wait();
+                Ok(())
+            }
+        }
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let buffer = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 128]))), 0, mock_tpl_service());
+        let first = create_communicator_with_buffers(
+            vec![buffer.clone()],
+            BlockingExecutor { entered: entered.clone(), release: release.clone() },
+        );
+        let second = create_communicator_with_buffers(vec![buffer.clone()], EchoMmExecutor);
+        let worker = std::thread::spawn(move || first.communicate(0, b"first", test_recipient()));
+        entered.wait();
+        let competing = second.communicate(0, b"second", test_recipient());
+        let buffer_busy = matches!(buffer.try_lock(), Err(crate::config::CommunicateBufferStatus::Busy));
+        release.wait();
+        assert_eq!(worker.join().unwrap().unwrap(), b"first");
+        assert_eq!(competing, Err(Status::Busy));
+        assert!(buffer_busy);
+        assert_eq!(second.communicate(0, b"second", test_recipient()).unwrap(), b"second");
+        assert_eq!(buffer.try_lock().unwrap().get_message().unwrap(), b"second");
+    }
+
     fn test_recipient() -> Guid<'static> {
         Guid::from_ref(&TEST_RECIPIENT)
     }
@@ -452,7 +510,11 @@ mod tests {
         ($size:expr, $mock_executor:expr) => {{
             let buffer: &'static mut [u8; $size] = Box::leak(Box::new([0u8; $size]));
             MmCommunicator {
-                comm_buffers: RefCell::new(vec![CommunicateBuffer::new(Pin::new(buffer), 0)]),
+                comm_buffers: TplMutex::new(
+                    mock_tpl_service(),
+                    Tpl::NOTIFY,
+                    vec![CommunicateBuffer::new(Pin::new(buffer), 0, mock_tpl_service())],
+                ),
                 mm_executor: Some($mock_executor),
                 notify_context: None,
             }
@@ -463,7 +525,11 @@ mod tests {
         buffers: Vec<CommunicateBuffer>,
         executor: E,
     ) -> MmCommunicator<E> {
-        MmCommunicator { comm_buffers: RefCell::new(buffers), mm_executor: Some(executor), notify_context: None }
+        MmCommunicator {
+            comm_buffers: TplMutex::new(mock_tpl_service(), Tpl::NOTIFY, buffers),
+            mm_executor: Some(executor),
+            notify_context: None,
+        }
     }
 
     fn run_entry_point(
@@ -474,7 +540,7 @@ mod tests {
         storage.add_config(config);
         let sw_mmi_trigger: Service<dyn SwMmiTrigger> = Service::mock(Box::new(MockSwMmiTrigger::new()));
         let protocols: Service<dyn ProtocolServices> = Service::mock(Box::new(protocols));
-        let result = MmCommunicator::new().entry_point(&mut storage, sw_mmi_trigger, protocols);
+        let result = MmCommunicator::new().entry_point(&mut storage, sw_mmi_trigger, protocols, mock_tpl_service());
         (storage, result)
     }
 
@@ -504,6 +570,11 @@ mod tests {
         let config = MmCommunicationConfiguration {
             enable_comm_buffer_updates: true,
             updatable_buffer_id: Some(2),
+            comm_buffers: vec![CommunicateBuffer::new(
+                Pin::new(Box::leak(Box::new([0u8; 1024]))),
+                2,
+                mock_tpl_service(),
+            )],
             ..Default::default()
         };
         let mut protocols = MockProtocolServices::new();
@@ -520,6 +591,11 @@ mod tests {
         let config = MmCommunicationConfiguration {
             enable_comm_buffer_updates: true,
             updatable_buffer_id: Some(2),
+            comm_buffers: vec![CommunicateBuffer::new(
+                Pin::new(Box::leak(Box::new([0u8; 1024]))),
+                2,
+                mock_tpl_service(),
+            )],
             ..Default::default()
         };
         let mut protocols = MockProtocolServices::new();
@@ -528,6 +604,18 @@ mod tests {
         let (storage, result) = run_entry_point(config, protocols);
 
         assert!(result.is_err());
+        assert!(storage.get_service::<dyn MmCommunication>().is_none());
+    }
+
+    #[test]
+    fn test_mm_communicator_buffer_updates_require_existing_buffer() {
+        let config = MmCommunicationConfiguration {
+            enable_comm_buffer_updates: true,
+            updatable_buffer_id: Some(2),
+            ..Default::default()
+        };
+        let (storage, result) = run_entry_point(config, MockProtocolServices::new());
+        assert_eq!(result, Err(patina::error::EfiError::NotFound));
         assert!(storage.get_service::<dyn MmCommunication>().is_none());
     }
 
@@ -551,7 +639,7 @@ mod tests {
         mock_executor.expect_execute_mm().never();
 
         let communicator = MmCommunicator {
-            comm_buffers: RefCell::new(vec![]),
+            comm_buffers: TplMutex::new(mock_tpl_service(), Tpl::NOTIFY, vec![]),
             mm_executor: Some(mock_executor),
             notify_context: None,
         };
@@ -572,7 +660,11 @@ mod tests {
     #[test]
     fn test_communicate_no_mm_executor() {
         let communicator: MmCommunicator<MockMmExecutor> = MmCommunicator {
-            comm_buffers: RefCell::new(vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0)]),
+            comm_buffers: TplMutex::new(
+                mock_tpl_service(),
+                Tpl::NOTIFY,
+                vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0, mock_tpl_service())],
+            ),
             mm_executor: None,
             notify_context: None,
         };
@@ -644,9 +736,9 @@ mod tests {
     fn test_communicate_with_multiple_buffers() {
         // Create multiple buffers with different IDs
         let buffers = vec![
-            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1),
-            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 5),
-            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 256]))), 10),
+            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1, mock_tpl_service()),
+            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 5, mock_tpl_service()),
+            CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 256]))), 10, mock_tpl_service()),
         ];
 
         let communicator = create_communicator_with_buffers(buffers, EchoMmExecutor);
@@ -693,7 +785,8 @@ mod tests {
         assert_eq!(result2.unwrap(), data2.to_vec());
 
         // Verify buffer was properly reset between communications
-        let buffer = &communicator.comm_buffers.borrow()[0];
+        let buffers = communicator.comm_buffers.lock();
+        let buffer = buffers[0].try_lock().unwrap();
         let current_message = buffer.get_message().unwrap();
         assert_eq!(current_message, data2.to_vec());
     }
@@ -723,23 +816,25 @@ mod tests {
 
     #[test]
     fn test_mm_communicator_debug_formatting() {
-        let buffer1 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1);
-        let buffer2 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 2);
+        let buffer1 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1, mock_tpl_service());
+        let buffer2 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 2, mock_tpl_service());
         let buffers = vec![buffer1, buffer2];
 
         let communicator = create_communicator_with_buffers(buffers, EchoMmExecutor);
 
         let debug_output = format!("{communicator:?}");
         assert!(debug_output.contains("MM Communicator:"));
-        assert!(debug_output.contains("Comm Buffer:"));
         assert!(debug_output.contains("MM Executor Set: true"));
     }
 
     #[test]
     fn test_mm_communicator_debug_no_executor() {
-        let buffer = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 0);
-        let communicator: MmCommunicator<EchoMmExecutor> =
-            MmCommunicator { comm_buffers: RefCell::new(vec![buffer]), mm_executor: None, notify_context: None };
+        let buffer = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 0, mock_tpl_service());
+        let communicator: MmCommunicator<EchoMmExecutor> = MmCommunicator {
+            comm_buffers: TplMutex::new(mock_tpl_service(), Tpl::NOTIFY, vec![buffer]),
+            mm_executor: None,
+            notify_context: None,
+        };
 
         let debug_output = format!("{communicator:?}");
         assert!(debug_output.contains("MM Communicator:"));
@@ -749,7 +844,8 @@ mod tests {
     #[test]
     fn test_mm_communicator_default() {
         let communicator = MmCommunicator::default();
-        assert_eq!(communicator.comm_buffers.borrow().len(), 0);
+        communicator.comm_buffers.init(mock_tpl_service());
+        assert_eq!(communicator.comm_buffers.lock().len(), 0);
         assert!(communicator.mm_executor.is_none());
         assert!(communicator.notify_context.is_none());
     }
@@ -757,9 +853,9 @@ mod tests {
     #[test]
     fn test_mm_communicator_with_executor() {
         let executor = EchoMmExecutor;
-        let communicator = MmCommunicator::with_executor(executor);
+        let communicator = MmCommunicator::with_executor(executor, mock_tpl_service());
 
-        assert_eq!(communicator.comm_buffers.borrow().len(), 0);
+        assert_eq!(communicator.comm_buffers.lock().len(), 0);
         assert!(communicator.mm_executor.is_some());
         assert!(communicator.notify_context.is_none());
     }
@@ -801,8 +897,8 @@ mod tests {
     #[test]
     fn test_communicate_with_disabled_buffer() {
         // Create a buffer and disable it
-        let mut buffer = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0);
-        buffer.disable();
+        let buffer = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0, mock_tpl_service());
+        buffer.try_lock().unwrap().disable();
 
         let communicator = create_communicator_with_buffers(vec![buffer], EchoMmExecutor);
 
@@ -814,13 +910,13 @@ mod tests {
     #[test]
     fn test_communicate_with_mixed_enabled_disabled_buffers() {
         // Create multiple buffers with some enabled and some disabled
-        let mut buffer1 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1);
-        buffer1.disable(); // Disabled
+        let buffer1 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 512]))), 1, mock_tpl_service());
+        buffer1.try_lock().unwrap().disable(); // Disabled
 
-        let buffer2 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 2); // Enabled
+        let buffer2 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 2, mock_tpl_service()); // Enabled
 
-        let mut buffer3 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 256]))), 3);
-        buffer3.disable(); // Disabled
+        let buffer3 = CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 256]))), 3, mock_tpl_service());
+        buffer3.try_lock().unwrap().disable(); // Disabled
 
         let buffers = vec![buffer1, buffer2, buffer3];
         let communicator = create_communicator_with_buffers(buffers, EchoMmExecutor);
@@ -842,15 +938,17 @@ mod tests {
     #[test]
     fn test_mm_communicator_new() {
         let communicator = MmCommunicator::new();
+        communicator.comm_buffers.init(mock_tpl_service());
 
         // Verify initial state
-        assert_eq!(communicator.comm_buffers.borrow().len(), 0);
+        assert_eq!(communicator.comm_buffers.lock().len(), 0);
         assert!(communicator.mm_executor.is_none());
         assert!(communicator.notify_context.is_none());
 
         // Verify it matches default
         let default_communicator = MmCommunicator::default();
-        assert_eq!(communicator.comm_buffers.borrow().len(), default_communicator.comm_buffers.borrow().len());
+        default_communicator.comm_buffers.init(mock_tpl_service());
+        assert_eq!(communicator.comm_buffers.lock().len(), default_communicator.comm_buffers.lock().len());
     }
 
     #[test]
@@ -886,17 +984,15 @@ mod tests {
 
         // SAFETY: The memory is allocated above in the test and valid for the duration of the test
         let buffer_with_mailbox = unsafe {
-            CommunicateBuffer::from_firmware_region(buffer_addr, buffer_size, 0, Some(status_addr))
+            CommunicateBuffer::from_firmware_region(buffer_addr, buffer_size, 0, Some(status_addr), mock_tpl_service())
                 .expect("Failed to create buffer with mailbox")
         };
 
-        assert!(buffer_with_mailbox.has_status_mailbox());
+        assert!(buffer_with_mailbox.try_lock().unwrap().has_status_mailbox());
 
-        struct NonZeroReturnExecutor {
-            status_ptr: *mut MmCommBufferStatus,
-        }
+        struct NonZeroReturnExecutor;
         impl MmExecutor for NonZeroReturnExecutor {
-            fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+            fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
                 // Get the message and echo it back (like EchoMmExecutor)
                 let request_data = comm_buffer.get_message().map_err(|_| Status::InvalidDataBuffer)?;
                 let recipient_bytes = comm_buffer
@@ -909,24 +1005,19 @@ mod tests {
                 comm_buffer.set_message_info(recipient).map_err(|_| Status::CommBufferInitError)?;
                 comm_buffer.set_message(&request_data).map_err(|_| Status::CommBufferInitError)?;
 
-                // Set a non-zero return status in the mailbox to simulate a failure
-                // SAFETY: The memory was allocated and owned by the test
-                unsafe {
-                    (*self.status_ptr).return_status = 0x8000_0000_0000_0001;
-                    (*self.status_ptr).return_buffer_size = request_data.len() as u64;
-                }
+                comm_buffer.set_mm_return_status(0x8000_0000_0000_0001, request_data.len() as u64).unwrap();
 
                 Ok(())
             }
         }
 
-        let communicator =
-            create_communicator_with_buffers(vec![buffer_with_mailbox], NonZeroReturnExecutor { status_ptr });
+        let communicator = create_communicator_with_buffers(vec![buffer_with_mailbox], NonZeroReturnExecutor);
 
         let result = communicator.communicate(0, &TEST_DATA, test_recipient());
         assert!(result.is_ok(), "Communication should succeed even with a non-zero MM return status");
         assert_eq!(result.unwrap(), TEST_DATA.to_vec());
 
+        drop(communicator);
         // SAFETY: Cleaning up memory allocated in the test.
         unsafe {
             dealloc(buffer_ptr, buffer_layout);
@@ -967,14 +1058,14 @@ mod tests {
 
         // SAFETY: The memory is allocated above in the test and valid for the duration of the test
         let buffer_with_mailbox = unsafe {
-            CommunicateBuffer::from_firmware_region(buffer_addr, buffer_size, 0, Some(status_addr))
+            CommunicateBuffer::from_firmware_region(buffer_addr, buffer_size, 0, Some(status_addr), mock_tpl_service())
                 .expect("Failed to create buffer with mailbox")
         };
 
         // Create an executor that corrupts the buffer to cause get_message to fail
         struct CorruptBufferExecutor;
         impl MmExecutor for CorruptBufferExecutor {
-            fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+            fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
                 // Corrupt the message length (larger than the buffer size)
                 let huge_length = usize::MAX;
 
@@ -995,6 +1086,7 @@ mod tests {
         let result = communicator.communicate(0, &TEST_DATA, test_recipient());
         assert_eq!(result, Err(Status::InvalidResponse));
 
+        drop(communicator);
         // SAFETY: Cleaning up memory allocated in the test.
         unsafe {
             dealloc(buffer_ptr, buffer_layout);

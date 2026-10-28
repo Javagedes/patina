@@ -9,10 +9,11 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 
+use crate::patina_mm_integration::common::mock_tpl_service;
 use patina::{BinaryGuid, Guid, pi::protocol::communication::EfiMmCommunicateHeader};
 use patina_mm::{
     component::communicator::{MmCommunication, MmCommunicator, MmExecutor, Status},
-    config::CommunicateBuffer,
+    config::{CommunicateBuffer, CommunicateBufferAccess},
 };
 
 use core::pin::Pin;
@@ -48,7 +49,7 @@ impl CoreTestExecutor {
 }
 
 impl MmExecutor for CoreTestExecutor {
-    fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+    fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
         let recipient: BinaryGuid = comm_buffer
             .get_header_guid()
             .map_err(|_| Status::CommBufferInitError)?
@@ -77,10 +78,10 @@ mod tests {
         let mut executor = CoreTestExecutor::new();
         executor.add_handler(TestHandler::new(TEST_GUID, b"test response".to_vec()));
 
-        let buffers = vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0)];
+        let buffers = vec![CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; 1024]))), 0, mock_tpl_service())];
 
-        let communicator = MmCommunicator::with_executor(executor);
-        communicator.set_test_comm_buffers(buffers);
+        let communicator = MmCommunicator::with_executor(executor, mock_tpl_service());
+        communicator.set_test_comm_buffers(buffers).expect("test buffers should be available");
         communicator
     }
 

@@ -8,7 +8,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 
-use crate::patina_mm_integration::common::{constants::*, framework::*};
+use crate::patina_mm_integration::common::{constants::*, framework::*, mock_tpl_service};
 
 use core::pin::Pin;
 use patina::{
@@ -17,7 +17,7 @@ use patina::{
 };
 use patina_mm::{
     component::communicator::{MmCommunication, MmCommunicator, MmExecutor},
-    config::CommunicateBuffer,
+    config::{CommunicateBuffer, CommunicateBufferAccess},
 };
 
 /// Additional test GUIDs for stress testing
@@ -45,7 +45,7 @@ impl StressTestMmExecutor {
 impl MmExecutor for StressTestMmExecutor {
     fn execute_mm(
         &self,
-        comm_buffer: &mut CommunicateBuffer,
+        comm_buffer: &mut CommunicateBufferAccess,
     ) -> Result<(), patina_mm::component::communicator::Status> {
         // Extract the GUID and data from the communication buffer
         let data =
@@ -121,16 +121,16 @@ fn create_stress_test_communicator() -> (MmCommunicator<StressTestMmExecutor>, M
 
     // Create MM Communicator with our test executor
     let executor = StressTestMmExecutor::new(framework.clone());
-    let communicator = MmCommunicator::with_executor(executor);
+    let communicator = MmCommunicator::with_executor(executor, mock_tpl_service());
 
     // Create communication buffers for testing
     let buffers = vec![
-        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB]))), 0),
-        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB]))), 1),
-        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB * 2]))), 2), // Larger buffer
+        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB]))), 0, mock_tpl_service()),
+        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB]))), 1, mock_tpl_service()),
+        CommunicateBuffer::new(Pin::new(Box::leak(Box::new([0u8; SIZE_4KB * 2]))), 2, mock_tpl_service()), // Larger buffer
     ];
 
-    communicator.set_test_comm_buffers(buffers);
+    communicator.set_test_comm_buffers(buffers).expect("test buffers should be available");
 
     (communicator, framework)
 }

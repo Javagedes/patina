@@ -14,7 +14,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 
-use crate::patina_mm_integration::common::{constants::*, handlers::*};
+use crate::patina_mm_integration::common::{constants::*, handlers::*, mock_tpl_service};
 
 extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
@@ -27,7 +27,7 @@ use std::{
 // Import the real patina_mm components and services
 use patina_mm::{
     component::communicator::{MmCommunication, MmCommunicator, MmExecutor, Status},
-    config::CommunicateBuffer,
+    config::{CommunicateBuffer, CommunicateBufferAccess},
 };
 
 /// Test MM Executor for integration testing
@@ -50,7 +50,7 @@ impl TestMmExecutor {
 }
 
 impl MmExecutor for TestMmExecutor {
-    fn execute_mm(&self, comm_buffer: &mut CommunicateBuffer) -> Result<(), Status> {
+    fn execute_mm(&self, comm_buffer: &mut CommunicateBufferAccess) -> Result<(), Status> {
         log::debug!(target: "test_mm_executor", "Executing MM with test handlers");
 
         // Get the recipient and request data from the communication buffer
@@ -168,16 +168,16 @@ impl RealComponentMmTestFrameworkBuilder {
         // Create test communication buffer for testing
         const TEST_BUFFER_SIZE: usize = 4096;
         let test_buffer: &'static mut [u8; TEST_BUFFER_SIZE] = Box::leak(Box::new([0u8; TEST_BUFFER_SIZE]));
-        let comm_buffer = CommunicateBuffer::new(core::pin::Pin::new(test_buffer), 0);
+        let comm_buffer = CommunicateBuffer::new(core::pin::Pin::new(test_buffer), 0, mock_tpl_service());
 
         // Create the test MM executor with our test handlers
         let test_executor = TestMmExecutor::new(handlers);
 
         // Create real MM communicator with test executor and test communication buffer
-        let mm_communicator = MmCommunicator::with_executor(test_executor);
+        let mm_communicator = MmCommunicator::with_executor(test_executor, mock_tpl_service());
 
         // Set up the communication buffer in the communicator
-        mm_communicator.set_test_comm_buffers(vec![comm_buffer]);
+        mm_communicator.set_test_comm_buffers(vec![comm_buffer]).expect("test buffers should be available");
 
         Ok(RealComponentMmTestFramework { mm_communicator })
     }
