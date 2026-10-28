@@ -228,7 +228,7 @@ impl MmCommunicator {
             (config.comm_buffers.clone(), config.enable_comm_buffer_updates, config.updatable_buffer_id)
         };
 
-        self.comm_buffers = TplMutex::new(tpl, Tpl::NOTIFY, comm_buffers);
+        self.comm_buffers = TplMutex::new(tpl.clone(), Tpl::NOTIFY, comm_buffers);
 
         let buffer_count = self.comm_buffers.lock().len();
         log::info!(target: "mm_comm", "MM Communicator initialized with {buffer_count} communication buffers");

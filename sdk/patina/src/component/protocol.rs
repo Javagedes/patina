@@ -141,12 +141,10 @@ impl<P: ProtocolInterface + 'static> Deref for Protocol<P> {
     }
 }
 
-impl<P: ProtocolInterface + 'static> Copy for Protocol<P> {}
-
 impl<P: ProtocolInterface + 'static> Clone for Protocol<P> {
     #[cfg_attr(coverage, coverage(off))]
     fn clone(&self) -> Self {
-        *self
+        Self { protocols: self.protocols.clone(), _marker: PhantomData }
     }
 }
 

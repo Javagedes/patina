@@ -83,16 +83,24 @@ impl Service {
     }
 
     /// Returns a token stream containing code to register 0..N services.
-    fn service_register(&self) -> TokenStream {
+    fn service_register(&self, owned: bool) -> TokenStream {
         let mut tokens = TokenStream::new();
         let alloc_name = self.alloc_name();
 
         for service in &self.config.services {
-            tokens.extend(quote! {
-                let ref_service: &'static #service = leaked;
-                let any: &'static (dyn core::any::Any + Send + Sync) = #alloc_name::boxed::Box::leak(#alloc_name::boxed::Box::new(ref_service));
-                Self::register_service::<#service>(storage, any);
-            });
+            if owned {
+                tokens.extend(quote! {
+                    let service: #alloc_name::sync::Arc<#service> = shared.clone();
+                    let any: #alloc_name::sync::Arc<dyn core::any::Any + Send + Sync> = #alloc_name::sync::Arc::new(service);
+                    Self::register_service::<#service>(storage, any);
+                });
+            } else {
+                tokens.extend(quote! {
+                    let ref_service: &'static #service = self;
+                    let any: #alloc_name::sync::Arc<dyn core::any::Any + Send + Sync> = #alloc_name::sync::Arc::new(ref_service);
+                    Self::register_service::<#service>(storage, any);
+                });
+            }
         }
         tokens
     }
@@ -176,23 +184,23 @@ pub(crate) fn service2(item: proc_macro2::TokenStream) -> proc_macro2::TokenStre
     let rhs = service.rhs_generics();
     let where_clause = &service.generics().where_clause;
     let alloc_name = service.alloc_name();
-    let service_register = service.service_register();
+    let owned_service_register = service.service_register(true);
+    let static_service_register = service.service_register(false);
 
     quote! {
         extern crate alloc as #alloc_name;
         impl #lhs patina::component::service::IntoService for #name #rhs #where_clause {
 
             fn register(self, storage: &mut patina::component::Storage) {
-                let leaked: &'static Self = #alloc_name::boxed::Box::leak(#alloc_name::boxed::Box::new(self));
-                #service_register
+                let shared = #alloc_name::sync::Arc::new(self);
+                #owned_service_register
             }
         }
 
         impl #lhs patina::component::service::IntoService for &'static #name #rhs #where_clause {
 
             fn register(self, storage: &mut patina::component::Storage) {
-                let leaked: Self = self;
-                #service_register
+                #static_service_register
             }
         }
     }
@@ -215,18 +223,17 @@ mod tests {
             extern crate alloc as __alloc_service_MyStruct;
             impl patina::component::service::IntoService for MyStruct {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let shared = __alloc_service_MyStruct::sync::Arc::new(self);
+                    let service: __alloc_service_MyStruct::sync::Arc<dyn MyService> = shared.clone();
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
 
             impl patina::component::service::IntoService for &'static MyStruct {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: Self = self;
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let ref_service: &'static dyn MyService = self;
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(ref_service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -246,24 +253,23 @@ mod tests {
             extern crate alloc as __alloc_service_MyStruct;
             impl patina::component::service::IntoService for MyStruct {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let shared = __alloc_service_MyStruct::sync::Arc::new(self);
+                    let service: __alloc_service_MyStruct::sync::Arc<dyn MyService> = shared.clone();
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(service);
                     Self::register_service::<dyn MyService>(storage, any);
-                    let ref_service: &'static dyn MyService2 = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let service: __alloc_service_MyStruct::sync::Arc<dyn MyService2> = shared.clone();
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(service);
                     Self::register_service::<dyn MyService2>(storage, any);
                 }
             }
 
             impl patina::component::service::IntoService for &'static MyStruct {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: Self = self;
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let ref_service: &'static dyn MyService = self;
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(ref_service);
                     Self::register_service::<dyn MyService>(storage, any);
-                    let ref_service: &'static dyn MyService2 = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let ref_service: &'static dyn MyService2 = self;
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(ref_service);
                     Self::register_service::<dyn MyService2>(storage, any);
                 }
             }
@@ -283,18 +289,17 @@ mod tests {
             extern crate alloc as __alloc_service_MyStruct;
             impl<T: Debug> patina::component::service::IntoService for MyStruct<T> where T: Clone {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let shared = __alloc_service_MyStruct::sync::Arc::new(self);
+                    let service: __alloc_service_MyStruct::sync::Arc<dyn MyService> = shared.clone();
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
 
             impl<T: Debug> patina::component::service::IntoService for &'static MyStruct<T> where T: Clone {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: Self = self;
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let ref_service: &'static dyn MyService = self;
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(ref_service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -315,18 +320,17 @@ mod tests {
             extern crate alloc as __alloc_service_MyStruct;
             impl<T: Debug> patina::component::service::IntoService for MyStruct<T> {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let shared = __alloc_service_MyStruct::sync::Arc::new(self);
+                    let service: __alloc_service_MyStruct::sync::Arc<dyn MyService> = shared.clone();
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
 
             impl<T: Debug> patina::component::service::IntoService for &'static MyStruct<T> {
                 fn register(self, storage: &mut patina::component::Storage) {
-                    let leaked: Self = self;
-                    let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let ref_service: &'static dyn MyService = self;
+                    let any: __alloc_service_MyStruct::sync::Arc<dyn core::any::Any + Send + Sync> = __alloc_service_MyStruct::sync::Arc::new(ref_service);
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }

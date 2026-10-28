@@ -9,9 +9,13 @@
 //! interface methods will be available to consumers of the service. If a service needs to be mutable, it should use
 //! interior mutability to achieve this.
 //!
-//! The backing data is maintained as a static untyped type, which allows for one service to use another service in
-//! it's implementation without needing to know about the underlying type or worry about lifetimes of holding one
-//! service inside of another service.
+//! Handles share ownership of type-erased backing data, allowing one service to retain another service
+//! without knowing its concrete implementation or borrowing the storage. Owned implementations are
+//! destroyed when their last owner is dropped; externally owned static implementations are not destroyed.
+//! Ownership cycles and handles retained in static cells keep implementations alive.
+//!
+//! Firmware must retain its services for as long as callbacks or runtime consumers can use them, and
+//! must not release the last owner after `ExitBootServices`, when deallocation is unavailable.
 //!
 //! Similar to other [Param] implementations, any component that consumes a service will not be dispatched until the
 //! services is produced, which allows for ordered dispatch of components that depend on each other. As mentioned
@@ -120,7 +124,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0
 //!
-use alloc::{borrow::Cow, boxed::Box};
+use alloc::{borrow::Cow, boxed::Box, sync::Arc};
 use core::{any::Any, fmt::Debug, marker::PhantomData, ops::Deref};
 
 use crate::component::{
@@ -144,17 +148,15 @@ pub trait IntoService {
     fn register(self, storage: &mut Storage);
     /// Helper function to register the service.
     ///
-    /// ## Safety
-    ///
-    /// - Caller must ensure the registered service is a static dyn Any, where the underlying type is a Box\<dyn T\>
-    ///   where T is the Service trait.
+    /// The erased value must contain an `Arc<S>` for an owned service or an `&'static S`
+    /// for an externally owned static service.
     ///
     /// ## Example
     ///
     /// ``` rust
     /// extern crate alloc;
     ///
-    /// use alloc::boxed::Box;
+    /// use alloc::sync::Arc;
     /// use patina::component::{Storage, service::IntoService};
     ///
     /// struct MyStruct;
@@ -165,27 +167,27 @@ pub trait IntoService {
     ///
     /// impl IntoService for MyStruct {
     ///   fn register(self, storage: &mut Storage) {
-    ///     let boxed: Box<dyn Service> = Box::new(self);
-    ///     let leaked: &'static (dyn core::any::Any + Send + Sync) = Box::leak(Box::new(boxed));
-    ///     Self::register_service::<dyn Service>(storage, leaked);
+    ///     let service: Arc<dyn Service> = Arc::new(self);
+    ///     Self::register_service::<dyn Service>(storage, Arc::new(service));
     ///   }
     /// }
     ///
     /// ```
-    fn register_service<S: ?Sized + 'static>(storage: &mut Storage, service: &'static (dyn Any + Send + Sync)) {
+    fn register_service<S: ?Sized + 'static>(storage: &mut Storage, service: Arc<dyn Any + Send + Sync>) {
         let id = storage.register_service::<S>();
         storage.insert_service(id, service);
     }
 }
 
-/// A service with a static lifetime that can be used as a parameter to a [Component](super::Component).
+/// A shared service that can be used as a parameter to a [Component](super::Component).
 ///
 /// The underlying service that this object wraps can be either a concrete type such as a struct or enum, or a dyn
 /// trait object. In nearly all cases, the service should be a dyn trait object so that consumers of the service can
 /// rely on the service being the same regardless of the underlying implementation.
 ///
-/// This type has a static lifetime, which means it can can be consumed during component execution, such as being used
-/// as backing functionality for another service that is being produced by the component.
+/// Handles own their service and can outlive the storage that produced them. Cloning a handle shares
+/// ownership; an owned implementation is dropped when its last owner is dropped. References obtained
+/// through a handle borrow that handle rather than having a static lifetime.
 ///
 /// Implementations must be thread-safe. Interior mutability through `&self` does not bypass this
 /// requirement:
@@ -200,15 +202,16 @@ pub trait IntoService {
 /// While implementing [`IntoService`] is possible, it is advised to use the [`IntoService`](patina_macro::IntoService)
 /// derive macro, which also provides more information.
 pub struct Service<T: ?Sized + 'static> {
-    value: &'static (dyn Any + Send + Sync),
+    value: Arc<dyn Any + Send + Sync>,
     _marker: core::marker::PhantomData<T>,
 }
 
 impl<T: ?Sized + 'static> Service<T> {
-    /// Creates an instance of Service by creating a Box\<dyn T\> and then leaking it to a static lifetime.
+    /// Creates an owned service for testing.
     ///
-    /// This function is intended for testing purposes only. Dropping the returned value will cause a memory leak as
-    /// the underlying (leaked) Box cannot be deallocated.
+    /// The mock is dropped when the last handle is dropped, allowing mock frameworks to verify
+    /// unmet expectations. Retaining handles in static cells or ownership cycles prevents this
+    /// automatic verification.
     ///
     /// ## Example
     ///
@@ -243,33 +246,35 @@ impl<T: ?Sized + 'static> Service<T> {
     where
         T: Send + Sync,
     {
-        let v: &'static T = Box::leak(value);
-        let leaked: &'static (dyn core::any::Any + Send + Sync) = Box::leak(Box::new(v));
-        Self { value: leaked, _marker: PhantomData }
+        let value: Arc<T> = Arc::from(value);
+        Self { value: Arc::new(value), _marker: PhantomData }
     }
 }
 
-impl<T: ?Sized + 'static> From<&'static (dyn Any + Send + Sync)> for Service<T> {
-    fn from(value: &'static (dyn Any + Send + Sync)) -> Self {
+impl<T: ?Sized + 'static> From<Arc<dyn Any + Send + Sync>> for Service<T> {
+    fn from(value: Arc<dyn Any + Send + Sync>) -> Self {
         Self { value, _marker: PhantomData }
     }
 }
 
 impl<T: ?Sized + 'static> Deref for Service<T> {
-    type Target = &'static T;
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        self.value
-            .downcast_ref()
-            .unwrap_or_else(|| panic!("Service should be of type {}", super::type_name::normalized::<T>()))
+        if let Some(value) = self.value.downcast_ref::<Arc<T>>() {
+            value.as_ref()
+        } else {
+            self.value
+                .downcast_ref::<&'static T>()
+                .copied()
+                .unwrap_or_else(|| panic!("Service should be of type {}", super::type_name::normalized::<T>()))
+        }
     }
 }
 
-impl<T: ?Sized + 'static> Copy for Service<T> {}
-
 impl<T: ?Sized + 'static> Clone for Service<T> {
     fn clone(&self) -> Self {
-        *self
+        Self { value: Arc::clone(&self.value), _marker: PhantomData }
     }
 }
 
@@ -293,9 +298,13 @@ unsafe impl<T: ?Sized + 'static> Param for Service<T> {
         // SAFETY: State was validated by validate() to contain a valid service ID.
         // UnsafeStorageCell provides exclusive access to storage under Param protocol.
         Service::from(unsafe {
-            storage.storage().get_raw_service(*state).unwrap_or_else(|| {
-                panic!("Could not find Service value with id [{}] even though it was just validated.", *state)
-            })
+            storage
+                .storage()
+                .get_raw_service(*state)
+                .unwrap_or_else(|| {
+                    panic!("Could not find Service value with id [{}] even though it was just validated.", *state)
+                })
+                .clone()
         })
     }
 
@@ -313,6 +322,90 @@ unsafe impl<T: ?Sized + 'static> Param for Service<T> {
 #[cfg_attr(coverage, coverage(off))]
 mod tests {
     use super::{IntoService, *};
+
+    #[mockall::automock]
+    trait CheckedService: Send + Sync {
+        fn value(&self) -> u32;
+    }
+
+    #[test]
+    #[should_panic(expected = "fewer than expected")]
+    fn test_service_mock_checks_unmet_expectations_on_drop() {
+        let mut mock = MockCheckedService::new();
+        mock.expect_value().once().return_const(42u32);
+        let service: Service<dyn CheckedService> = Service::mock(Box::new(mock));
+        drop(service);
+    }
+
+    #[test]
+    #[should_panic(expected = "fewer than expected")]
+    fn test_service_mock_checks_partially_met_expectations_on_last_drop() {
+        let mut mock = MockCheckedService::new();
+        mock.expect_value().times(2).return_const(42u32);
+        let service: Service<dyn CheckedService> = Service::mock(Box::new(mock));
+        let other = service.clone();
+        assert_eq!(service.value(), 42);
+        drop(service);
+        drop(other);
+    }
+
+    #[test]
+    fn test_service_mock_can_meet_expectation_after_original_handle_drops() {
+        let mut mock = MockCheckedService::new();
+        mock.expect_value().once().return_const(42u32);
+        let service: Service<dyn CheckedService> = Service::mock(Box::new(mock));
+        let other = service.clone();
+        drop(service);
+        assert_eq!(other.value(), 42);
+        drop(other);
+    }
+
+    #[test]
+    fn test_service_mock_can_be_used_and_dropped_on_another_thread() {
+        let mut mock = MockCheckedService::new();
+        mock.expect_value().once().return_const(42u32);
+        let service: Service<dyn CheckedService> = Service::mock(Box::new(mock));
+        let other = service.clone();
+        drop(service);
+        std::thread::spawn(move || {
+            assert_eq!(other.value(), 42);
+        })
+        .join()
+        .expect("service owner should safely transfer to another thread");
+    }
+
+    #[test]
+    fn test_service_interfaces_share_ownership_beyond_storage() {
+        use crate as patina;
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        trait First: Send + Sync {}
+        trait Second: Send + Sync {}
+
+        #[derive(IntoService)]
+        #[service(dyn First, dyn Second)]
+        struct Shared(Arc<AtomicUsize>);
+
+        impl First for Shared {}
+        impl Second for Shared {}
+        impl Drop for Shared {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut storage = Storage::new();
+        storage.add_service(Shared(drops.clone()));
+        let first = storage.get_service::<dyn First>().unwrap();
+        let second = storage.get_service::<dyn Second>().unwrap();
+        drop(storage);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(first);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(second);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn test_service_derive_service_macro() {
@@ -448,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn test_services_can_be_copied() {
+    fn test_service_handles_can_be_cloned() {
         trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
@@ -466,8 +559,8 @@ mod tests {
         }
 
         let service: Service<dyn MyService> = Service::mock(Box::new(MockService));
+        consume_service(service.clone());
         consume_service(service);
-        consume_service(service); // This should work as well, since Service is Copy
     }
 
     #[test]

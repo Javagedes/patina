@@ -47,7 +47,7 @@ pub(super) fn register_buffer_update_notify(
     let context =
         Box::leak(Box::new(ProtocolNotifyContext { buffer, pending: TplMutex::new(tpl, LockTpl::NOTIFY, None) }));
     let context: &'static ProtocolNotifyContext = context;
-    let callback_protocols = protocols;
+    let callback_protocols = protocols.clone();
     protocols.on_protocol_installed::<MmCommBufferUpdateProtocol>(Tpl::Callback, move |handle| {
         handle_protocol_installed(&callback_protocols, handle, context);
     })?;

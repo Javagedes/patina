@@ -12,7 +12,7 @@ use crate::{
 };
 
 use crate::BinaryGuid;
-use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use core::{
     any::{Any, TypeId},
     cell::{Ref, RefCell, RefMut, UnsafeCell},
@@ -201,7 +201,7 @@ pub struct Storage {
     config_indices: BTreeMap<TypeId, usize>,
     /// A container for all service datums. This resource can only be accessed immutably, but one service datum can
     /// represent multiple services. Services must have internal mutability if they need to be modified.
-    services: SparseVec<&'static (dyn Any + Send + Sync)>,
+    services: SparseVec<Arc<dyn Any + Send + Sync>>,
     /// A map to convert a Service type to a concrete service index.
     service_indices: BTreeMap<TypeId, usize>,
     /// HOB parsers for converting guided HOBs into `Hob<T>` datums.
@@ -355,7 +355,7 @@ impl Storage {
     }
 
     /// Inserts a service into the storage.
-    pub(crate) fn insert_service(&mut self, id: usize, service: &'static (dyn Any + Send + Sync)) {
+    pub(crate) fn insert_service(&mut self, id: usize, service: Arc<dyn Any + Send + Sync>) {
         self.services.insert(id, service);
     }
 
@@ -365,15 +365,14 @@ impl Storage {
     }
 
     /// Retrieves a service from the underlying storage in its untyped form.
-    pub(crate) fn get_raw_service(&self, id: usize) -> Option<&'static (dyn Any + Send + Sync)> {
-        // Copy the reference, not the underlying value
-        self.services.get(id).copied()
+    pub(crate) fn get_raw_service(&self, id: usize) -> Option<&Arc<dyn Any + Send + Sync>> {
+        self.services.get(id)
     }
 
     /// Attempts to retrieve a service from the storage.
     pub fn get_service<S: ?Sized + 'static>(&self) -> Option<Service<S>> {
         let idx = *self.service_indices.get(&TypeId::of::<S>())?;
-        Some(Service::from(self.get_raw_service(idx)?))
+        Some(Service::from(self.get_raw_service(idx)?.clone()))
     }
 
     pub(crate) fn add_hob_parser<T: FromHob>(&mut self) {

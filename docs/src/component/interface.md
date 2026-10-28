@@ -161,8 +161,21 @@ instantiated with no other dependencies, then it can be registered directly duri
 which makes the service immediately available. If the service implementation does have dependencies, then a component
 will be used to request those dependencies, instantiate the service, and pass it to the storage with [Storage::add_service](https://github.com/OpenDevicePartnership/patina).
 
+Services use shared ownership. `Service<T>` is `Clone`, not `Copy`, and retains its implementation independently of
+storage. Clone a handle when multiple components, callbacks, or other services need to retain it. Dereferencing a
+handle borrows its implementation; it does not produce an `&'static T`. `Protocol<P>` also uses `Clone` rather than
+`Copy`, because it retains a protocol-service handle.
+
 Registered interfaces and implementations must support `Send + Sync`. Read-only `&self` methods alone do not ensure
 thread safety: shared mutable state must use appropriate synchronization, such as a `TplMutex` in firmware.
+
+Owned implementations are destroyed after their last owner is dropped. This also applies to `Service::mock`, allowing
+mockall to check unmet expectations at destruction. Handles retained by static cells or ownership cycles prevent
+automatic destruction and require explicit mock checkpoints when testing. Registering an externally owned
+`&'static` implementation does not transfer ownership of that implementation.
+
+Firmware must keep service owners alive for their consumers and must not drop the last owner after
+`ExitBootServices`, when allocation and deallocation are unavailable.
 
 If function generics are needed / wanted, it is suggested that most functionality be provided via a typical, mockable
 trait object service, with a lightweight concrete struct Service Wrapper to support generics. This allows for easy
