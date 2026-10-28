@@ -307,7 +307,7 @@ fn process_mm_performance_records(
 mod tests {
     use super::*;
     use alloc::boxed::Box;
-    use core::cell::Cell as StdCell;
+    use core::sync::atomic::{AtomicU8, Ordering};
     use patina::component::service::{performance::MockPerformanceManager, uefi_services::event::MockEventServices};
     use patina_mm::component::communicator::Status;
     use zerocopy::IntoBytes;
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_mm_record_collector_runs_once_with_one_record() {
         struct OneRecordComm {
-            step: StdCell<u8>,
+            step: AtomicU8,
         }
         impl MmCommunication for OneRecordComm {
             fn communicate<'a>(
@@ -449,11 +449,9 @@ mod tests {
                 _data_buffer: &[u8],
                 _recipient: patina::Guid<'a>,
             ) -> Result<Vec<u8>, Status> {
-                if self.step.get() == 0 {
-                    self.step.set(1);
+                if self.step.swap(1, Ordering::Relaxed) == 0 {
                     Ok(create_size_response!(u64::from(TEST_PERFORMANCE_RECORD_LENGTH)))
                 } else {
-                    self.step.set(2);
                     let record = create_test_record!(TEST_RECORD_ID_BASE, TEST_TIMESTAMP_BASE + 23);
                     let mut response = alloc::vec![0u8; TEST_MM_COMM_DATA_RESPONSE_SIZE];
                     response[0..8].copy_from_slice(&TEST_MM_COMM_FUNCTION_ID_DATA.to_le_bytes());
@@ -478,7 +476,7 @@ mod tests {
 
         let result = MmRecordCollector::new().entry_point(
             Service::mock(Box::new(performance)),
-            Service::mock(Box::new(OneRecordComm { step: StdCell::new(0) })),
+            Service::mock(Box::new(OneRecordComm { step: AtomicU8::new(0) })),
             Service::mock(Box::new(events)),
         );
 

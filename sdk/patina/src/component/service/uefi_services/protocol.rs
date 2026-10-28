@@ -231,7 +231,7 @@ impl From<EfiError> for ProtocolError {
 /// [`Service<dyn ProtocolServices>`](crate::component::service::Service) parameter to their entry
 /// point.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait ProtocolServices {
+pub trait ProtocolServices: Send + Sync {
     /// Installs a protocol interface identified by `protocol` on a handle.
     ///
     /// If `handle` is `None`, a new handle is created. The (possibly new) handle is returned.

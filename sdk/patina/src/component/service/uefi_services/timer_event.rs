@@ -66,7 +66,7 @@ pub enum TimerType {
 /// }
 /// ```
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait TimerEventServices {
+pub trait TimerEventServices: Send + Sync {
     /// Creates a timer event with a notification callback.
     ///
     /// The returned event can be armed with [`Self::set_timer`]. The `callback` runs at

@@ -57,7 +57,7 @@ methods on it. This assumes the struct can be constructed with the dependency al
 earlier than that, such as a `const`-constructed `static`, for example, see Pattern 4 instead.
 
 ```rust,ignore
-trait MyTrait {
+trait MyTrait: Send + Sync {
     fn do_work(&self);
 }
 

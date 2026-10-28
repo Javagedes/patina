@@ -59,7 +59,7 @@ use mockall::automock;
 /// by the core and serve as the API by which both internal code and external
 /// components can access memory services.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait MemoryManager {
+pub trait MemoryManager: Send + Sync {
     /// Allocates pages of memory.
     ///
     /// Allocates the specified number of pages of the memory type requested.

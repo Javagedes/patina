@@ -17,7 +17,7 @@ use mockall::automock;
 /// A platform may optionally produce this service if it needs to perform any platform-specific initialization of the
 /// MM environment.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait PlatformMmControl {
+pub trait PlatformMmControl: Send + Sync {
     /// Platform-specific initialization of the MM environment.
     fn init(&self) -> patina::error::Result<()>;
 }

@@ -23,8 +23,8 @@ use patina::standard::efi::Handle;
 pub struct SmbiosRecord {
     /// SMBIOS table header
     pub header: SmbiosTableHeader,
-    /// Optional handle of the producer that created this record
-    pub producer_handle: Option<Handle>,
+    /// Optional producer identity, stored as an exposed address rather than a dereferenceable pointer.
+    producer_handle: Option<usize>,
     /// Complete record data including header and strings
     pub data: Vec<u8>,
     pub(super) string_count: usize,
@@ -33,7 +33,12 @@ pub struct SmbiosRecord {
 impl SmbiosRecord {
     /// Creates a new SMBIOS record
     pub fn new(header: SmbiosTableHeader, producer_handle: Option<Handle>, data: Vec<u8>, string_count: usize) -> Self {
-        Self { header, producer_handle, data, string_count }
+        Self { header, producer_handle: producer_handle.map(|handle| handle.expose_provenance()), data, string_count }
+    }
+
+    /// Returns the producer's opaque handle without dereferencing it.
+    pub fn producer_handle(&self) -> Option<Handle> {
+        self.producer_handle.map(core::ptr::with_exposed_provenance_mut)
     }
 }
 
@@ -54,7 +59,7 @@ mod tests {
         let handle = record.header.handle;
         assert_eq!(record_type, 1);
         assert_eq!(handle, 5);
-        assert_eq!(record.producer_handle, None);
+        assert_eq!(record.producer_handle(), None);
         assert_eq!(record.data, data);
         assert_eq!(record.string_count, 0);
     }
@@ -66,7 +71,7 @@ mod tests {
         let data = vec![2u8, 8, 10, 0, 0, 0, 0, 0];
         let record = SmbiosRecord::new(header, Some(producer), data, 2);
         assert_eq!(record.string_count, 2);
-        assert_eq!(record.producer_handle, Some(producer));
+        assert_eq!(record.producer_handle(), Some(producer));
     }
 
     #[test]

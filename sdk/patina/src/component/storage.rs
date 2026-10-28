@@ -201,7 +201,7 @@ pub struct Storage {
     config_indices: BTreeMap<TypeId, usize>,
     /// A container for all service datums. This resource can only be accessed immutably, but one service datum can
     /// represent multiple services. Services must have internal mutability if they need to be modified.
-    services: SparseVec<&'static dyn Any>,
+    services: SparseVec<&'static (dyn Any + Send + Sync)>,
     /// A map to convert a Service type to a concrete service index.
     service_indices: BTreeMap<TypeId, usize>,
     /// HOB parsers for converting guided HOBs into `Hob<T>` datums.
@@ -355,7 +355,7 @@ impl Storage {
     }
 
     /// Inserts a service into the storage.
-    pub(crate) fn insert_service(&mut self, id: usize, service: &'static dyn Any) {
+    pub(crate) fn insert_service(&mut self, id: usize, service: &'static (dyn Any + Send + Sync)) {
         self.services.insert(id, service);
     }
 
@@ -365,7 +365,7 @@ impl Storage {
     }
 
     /// Retrieves a service from the underlying storage in its untyped form.
-    pub(crate) fn get_raw_service(&self, id: usize) -> Option<&'static dyn Any> {
+    pub(crate) fn get_raw_service(&self, id: usize) -> Option<&'static (dyn Any + Send + Sync)> {
         // Copy the reference, not the underlying value
         self.services.get(id).copied()
     }
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn test_services_still_work_if_storage_requires_re_alloc() {
         use crate as patina;
-        trait TestService {
+        trait TestService: Send + Sync {
             fn test(&self) -> usize;
         }
 
@@ -700,7 +700,7 @@ mod tests {
         use crate as patina;
         use patina::component::params::Commands;
 
-        trait TestService {
+        trait TestService: Send + Sync {
             fn test(&self) -> usize;
         }
 

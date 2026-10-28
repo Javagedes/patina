@@ -89,7 +89,7 @@ impl From<EfiError> for ImageError {
 /// }
 /// ```
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait ImageServices {
+pub trait ImageServices: Send + Sync {
     /// Loads a UEFI image from an in-memory buffer.
     ///
     /// `parent` must be a valid image handle (for example, an image handle the caller already

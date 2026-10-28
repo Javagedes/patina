@@ -148,7 +148,7 @@ impl AcpiTableManager {
 /// The `AcpiTableManager` provides functionality for installing, uninstalling, and accessing ACPI tables.
 /// This struct serves as the API by which internal implementations can provide custom ACPI implementation.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub(crate) trait AcpiProvider {
+pub(crate) trait AcpiProvider: Send + Sync {
     /// Installs an ACPI table and returns an associated key which can be used to get or uninstall the table later.
     fn install_acpi_table(&self, acpi_table: AcpiTable) -> Result<TableKey, AcpiError>;
 

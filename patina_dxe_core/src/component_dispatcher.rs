@@ -298,7 +298,7 @@ mod tests {
 
         /// A test service and implementation so we can add it via the Add<Service> struct
         /// and verify it was added to storage.
-        trait TestService {}
+        trait TestService: Send + Sync {}
 
         #[derive(patina::component::service::IntoService)]
         #[service(dyn TestService)]
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_component_with_unregistered_service_is_deferred_until_service_added() {
-        trait TestService {
+        trait TestService: Send + Sync {
             fn value(&self) -> u32;
         }
 
@@ -496,7 +496,7 @@ mod tests {
     fn test_dispatch_missing_shows_not_dispatched() {
         struct TestComponent;
 
-        trait TestService {}
+        trait TestService: Send + Sync {}
 
         #[component]
         impl TestComponent {

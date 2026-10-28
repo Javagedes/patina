@@ -153,7 +153,7 @@ pub(crate) trait EfiExceptionInfoDump {
 /// configure the hardware to take interrupts, manage the entry point for interrupts,
 /// and provide a callback mechanism for callers to handle exceptions.
 ///
-pub trait InterruptManager {
+pub trait InterruptManager: Send + Sync {
     /// Registers a callback for the given exception type.
     fn register_exception_handler(&self, exception_type: ExceptionType, handler: HandlerType) -> Result<(), EfiError> {
         exception_handling::register_exception_handler(exception_type, handler)

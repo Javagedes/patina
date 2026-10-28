@@ -32,7 +32,7 @@ use criterion::{Bencher, Criterion, criterion_group, criterion_main};
 use patina::component::service::Service;
 use patina_macro::IntoService;
 
-trait TestService {
+trait TestService: Send + Sync {
     fn do_something(&self) -> u32;
 }
 

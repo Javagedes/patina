@@ -114,7 +114,7 @@ pub enum Status {
 ///
 /// Provides a mechanism for components to communicate with MM handlers.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait MmCommunication {
+pub trait MmCommunication: Send + Sync {
     /// Sends messages via a communication ("comm") buffer to a MM handler and receives a response.
     ///
     /// # Parameters

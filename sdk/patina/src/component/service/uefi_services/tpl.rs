@@ -84,7 +84,7 @@ impl PreviousTpl {
 /// Most components should prefer the ergonomic [`TplServicesExt`] methods over calling
 /// [`Self::raise_tpl`]/[`Self::restore_tpl`] directly.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait TplServices {
+pub trait TplServices: Send + Sync {
     /// Raises the task priority level to `tpl`, returning a token for the previous level.
     ///
     /// The returned [`PreviousTpl`] must be passed to [`Self::restore_tpl`] to restore the prior

@@ -1082,7 +1082,7 @@ mod tests {
 
     #[test]
     fn test_deferred_commands_are_applied() {
-        trait TestService {
+        trait TestService: Send + Sync {
             #[allow(dead_code)]
             fn test(self);
         }

@@ -24,7 +24,7 @@ use crate::base::error::Result;
 /// service is only needed when a component must explicitly trigger a dispatch
 /// pass at a specific point in its execution.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait DxeDispatch {
+pub trait DxeDispatch: Send + Sync {
     /// Performs a single DXE driver dispatch pass.
     ///
     /// Returns `true` if any drivers were dispatched, `false` if no drivers were dispatched.

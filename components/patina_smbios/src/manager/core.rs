@@ -748,7 +748,7 @@ impl SmbiosManager {
         let mut offset: usize = 0;
         for record in records.iter() {
             if record.header.handle == handle {
-                return Some((table_addr + offset as u64, record.producer_handle));
+                return Some((table_addr + offset as u64, record.producer_handle()));
             }
             offset += record.data.len();
         }

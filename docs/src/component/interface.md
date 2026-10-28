@@ -161,6 +161,9 @@ instantiated with no other dependencies, then it can be registered directly duri
 which makes the service immediately available. If the service implementation does have dependencies, then a component
 will be used to request those dependencies, instantiate the service, and pass it to the storage with [Storage::add_service](https://github.com/OpenDevicePartnership/patina).
 
+Registered interfaces and implementations must support `Send + Sync`. Read-only `&self` methods alone do not ensure
+thread safety: shared mutable state must use appropriate synchronization, such as a `TplMutex` in firmware.
+
 If function generics are needed / wanted, it is suggested that most functionality be provided via a typical, mockable
 trait object service, with a lightweight concrete struct Service Wrapper to support generics. This allows for easy
 mocking of the underlying functionality, but provides an easy to use interface as seen below:
@@ -172,7 +175,7 @@ use patina::{
     component::service::Service,
 };
 
-trait TraitService {
+trait TraitService: Send + Sync {
     fn write_bytes(&self, bytes: Vec<u8>) -> Result<()>;
 }
 

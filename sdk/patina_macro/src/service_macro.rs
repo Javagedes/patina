@@ -90,7 +90,7 @@ impl Service {
         for service in &self.config.services {
             tokens.extend(quote! {
                 let ref_service: &'static #service = leaked;
-                let any: &'static dyn core::any::Any = #alloc_name::boxed::Box::leak(#alloc_name::boxed::Box::new(ref_service));
+                let any: &'static (dyn core::any::Any + Send + Sync) = #alloc_name::boxed::Box::leak(#alloc_name::boxed::Box::new(ref_service));
                 Self::register_service::<#service>(storage, any);
             });
         }
@@ -217,7 +217,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -226,7 +226,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: Self = self;
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -248,10 +248,10 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                     let ref_service: &'static dyn MyService2 = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService2>(storage, any);
                 }
             }
@@ -260,10 +260,10 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: Self = self;
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                     let ref_service: &'static dyn MyService2 = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService2>(storage, any);
                 }
             }
@@ -285,7 +285,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -294,7 +294,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: Self = self;
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -317,7 +317,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: &'static Self = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(self));
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }
@@ -326,7 +326,7 @@ mod tests {
                 fn register(self, storage: &mut patina::component::Storage) {
                     let leaked: Self = self;
                     let ref_service: &'static dyn MyService = leaked;
-                    let any: &'static dyn core::any::Any = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
+                    let any: &'static (dyn core::any::Any + Send + Sync) = __alloc_service_MyStruct::boxed::Box::leak(__alloc_service_MyStruct::boxed::Box::new(ref_service));
                     Self::register_service::<dyn MyService>(storage, any);
                 }
             }

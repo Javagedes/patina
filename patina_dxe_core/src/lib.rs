@@ -229,7 +229,7 @@ pub trait MemoryInfo {
 ///   }
 /// }
 /// ```
-pub trait PlatformInfo: 'static {
+pub trait PlatformInfo: Send + Sync + 'static {
     /// The platform's memory information and configuration.
     type MemoryInfo: MemoryInfo;
 
@@ -240,7 +240,7 @@ pub trait PlatformInfo: 'static {
     type ComponentInfo: ComponentInfo;
 
     /// The platform's section extractor type, used when extracting sections from firmware volumes.
-    type Extractor: SectionExtractor;
+    type Extractor: SectionExtractor + Send + Sync;
 
     /// The UEFI specification revision advertised by the System.
     const UEFI_SPEC_VERSION: UefiSpecVersion;

@@ -156,7 +156,7 @@ impl From<EfiError> for ConfigTableError {
 /// }
 /// ```
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait ConfigurationTableServices {
+pub trait ConfigurationTableServices: Send + Sync {
     /// Installs or replaces the configuration table associated with `guid`.
     ///
     /// # Errors

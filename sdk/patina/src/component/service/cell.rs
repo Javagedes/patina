@@ -39,7 +39,7 @@
 //! use patina::component::service::{Service, cell::ServiceCell};
 //!
 //! # use std::boxed::Box;
-//! trait MyService {
+//! trait MyService: Send + Sync {
 //!     fn value(&self) -> u32;
 //! }
 //!
@@ -92,9 +92,9 @@ pub struct ServiceCell<T: ?Sized + 'static> {
 // SAFETY: All writes to `value` go through `publish`, which is serialized by a `compare_exchange` on `state` so
 // that at most one writer ever calls `OnceCell::set`. Reads through `get` only observe `value` after an `Acquire`
 // load of `state` returns `DONE`, which is written by the `Release` store at the end of a successful `publish`.
-// Observing it establishes a "happens-before" relationship with that specific write. `Service<T>` is `Send` and `Sync`
-// unconditionally regardless of `T`, so no further bound on `T` is needed here.
-unsafe impl<T: ?Sized + 'static> Sync for ServiceCell<T> {}
+// Observing it establishes a "happens-before" relationship with that specific write.
+// The bounds ensure the stored handle can be transferred and shared between threads.
+unsafe impl<T: ?Sized + Send + Sync + 'static> Sync for ServiceCell<T> {}
 
 impl<T: ?Sized + 'static> ServiceCell<T> {
     /// Creates a new, empty cell.
@@ -170,7 +170,7 @@ mod tests {
     use super::*;
     use alloc::boxed::Box;
 
-    trait TestService {
+    trait TestService: Send + Sync {
         fn value(&self) -> u32;
     }
 

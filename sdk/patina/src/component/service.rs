@@ -49,7 +49,7 @@
 //!    }
 //! };
 //!
-//! trait MyService {}
+//! trait MyService: Send + Sync {}
 //!
 //! #[derive(IntoService)]
 //! #[service(dyn MyService)]
@@ -84,8 +84,8 @@
 //!   }
 //! };
 //!
-//! trait Service1 {}
-//! trait Service2 {}
+//! trait Service1: Send + Sync {}
+//! trait Service2: Send + Sync {}
 //!
 //! #[derive(IntoService)]
 //! #[service(dyn Service1)]
@@ -159,20 +159,20 @@ pub trait IntoService {
     ///
     /// struct MyStruct;
     ///
-    /// trait Service {}
+    /// trait Service: Send + Sync {}
     ///
     /// impl Service for MyStruct {}
     ///
     /// impl IntoService for MyStruct {
     ///   fn register(self, storage: &mut Storage) {
     ///     let boxed: Box<dyn Service> = Box::new(self);
-    ///     let leaked: &'static dyn core::any::Any = Box::leak(Box::new(boxed));
+    ///     let leaked: &'static (dyn core::any::Any + Send + Sync) = Box::leak(Box::new(boxed));
     ///     Self::register_service::<dyn Service>(storage, leaked);
     ///   }
     /// }
     ///
     /// ```
-    fn register_service<S: ?Sized + 'static>(storage: &mut Storage, service: &'static dyn Any) {
+    fn register_service<S: ?Sized + 'static>(storage: &mut Storage, service: &'static (dyn Any + Send + Sync)) {
         let id = storage.register_service::<S>();
         storage.insert_service(id, service);
     }
@@ -187,10 +187,20 @@ pub trait IntoService {
 /// This type has a static lifetime, which means it can can be consumed during component execution, such as being used
 /// as backing functionality for another service that is being produced by the component.
 ///
+/// Implementations must be thread-safe. Interior mutability through `&self` does not bypass this
+/// requirement:
+///
+/// ```compile_fail
+/// use patina::component::service::Service;
+/// use std::cell::Cell;
+///
+/// let service = Service::mock(Box::new(Cell::new(0u32)));
+/// ```
+///
 /// While implementing [`IntoService`] is possible, it is advised to use the [`IntoService`](patina_macro::IntoService)
 /// derive macro, which also provides more information.
 pub struct Service<T: ?Sized + 'static> {
-    value: &'static dyn Any,
+    value: &'static (dyn Any + Send + Sync),
     _marker: core::marker::PhantomData<T>,
 }
 
@@ -205,7 +215,7 @@ impl<T: ?Sized + 'static> Service<T> {
     /// ```rust
     /// use patina::component::service::Service;
     ///
-    /// trait Service1 {
+    /// trait Service1: Send + Sync {
     ///   fn do_something(&self) -> u32;
     /// }
     ///
@@ -229,15 +239,18 @@ impl<T: ?Sized + 'static> Service<T> {
     /// }
     /// ```
     #[allow(clippy::test_attr_in_doctest)]
-    pub fn mock(value: Box<T>) -> Self {
+    pub fn mock(value: Box<T>) -> Self
+    where
+        T: Send + Sync,
+    {
         let v: &'static T = Box::leak(value);
-        let leaked: &'static dyn core::any::Any = Box::leak(Box::new(v));
+        let leaked: &'static (dyn core::any::Any + Send + Sync) = Box::leak(Box::new(v));
         Self { value: leaked, _marker: PhantomData }
     }
 }
 
-impl<T: ?Sized + 'static> From<&'static dyn Any> for Service<T> {
-    fn from(value: &'static dyn Any) -> Self {
+impl<T: ?Sized + 'static> From<&'static (dyn Any + Send + Sync)> for Service<T> {
+    fn from(value: &'static (dyn Any + Send + Sync)) -> Self {
         Self { value, _marker: PhantomData }
     }
 }
@@ -266,13 +279,6 @@ impl<T: ?Sized + 'static> Debug for Service<T> {
         f.debug_struct("Service").field("type", &super::type_name::normalized::<T>()).finish()
     }
 }
-
-// SAFETY: Service<T> wraps a static reference with PhantomData.
-// All access is through immutable Deref. Static lifetime and immutable access make it Send+Sync safe.
-unsafe impl<T: ?Sized + 'static> Send for Service<T> {}
-// SAFETY: Service<T> wraps a static reference with PhantomData.
-// All access is through immutable Deref. Static lifetime and immutable access make it Send+Sync safe.
-unsafe impl<T: ?Sized + 'static> Sync for Service<T> {}
 
 // SAFETY: Service<T> parameter provides access to registered services.
 // State tracks the service ID. Validates service availability before access.
@@ -312,11 +318,11 @@ mod tests {
     fn test_service_derive_service_macro() {
         use crate as patina;
 
-        trait MyService {
+        trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
 
-        trait MyService2 {
+        trait MyService2: Send + Sync {
             fn do_something2(&self) -> u32;
         }
 
@@ -369,7 +375,7 @@ mod tests {
     fn test_available_service_validates_true() {
         use crate as patina;
 
-        trait MyService {
+        trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
 
@@ -398,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_missing_service_validates_false() {
-        trait MyService {
+        trait MyService: Send + Sync {
             #[allow(dead_code)]
             fn do_something(&self) -> u32;
         }
@@ -413,7 +419,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_get_param_without_validate_should_panic_when_missing() {
-        trait MyService {
+        trait MyService: Send + Sync {
             #[allow(dead_code)]
             fn do_something(&self) -> u32;
         }
@@ -426,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_mocking_works() {
-        trait MyService {
+        trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
 
@@ -443,7 +449,7 @@ mod tests {
 
     #[test]
     fn test_services_can_be_copied() {
-        trait MyService {
+        trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
 
@@ -466,7 +472,7 @@ mod tests {
 
     #[test]
     fn test_service_debug_shows_type_name_not_value() {
-        trait MyService {}
+        trait MyService: Send + Sync {}
 
         struct MockService;
 
@@ -481,7 +487,7 @@ mod tests {
     #[test]
     fn test_basic_static_support() {
         use crate as patina;
-        trait MyService {
+        trait MyService: Send + Sync {
             fn do_something(&self) -> u32;
         }
 

@@ -115,7 +115,7 @@ impl MyComponent {
    }
 }
 
-trait MyService {
+trait MyService: Send + Sync {
    fn do_something(&self) -> u32;
 }
 

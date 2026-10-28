@@ -40,7 +40,7 @@ use mockall::automock;
 /// 2. Ensure that the service is only invoked after hardware initialization for MMIs is complete and that the
 ///    system is in a safe state to handle MMIs.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub unsafe trait SwMmiTrigger {
+pub unsafe trait SwMmiTrigger: Send + Sync {
     /// Triggers a software Management Mode Interrupt (MMI).
     fn trigger_sw_mmi(&self, cmd_port_value: u8, data_port_value: u8) -> patina::error::Result<()>;
 }

@@ -101,7 +101,7 @@ impl Iterator for SmbiosRecordsIter<'_> {
                 continue;
             }
 
-            return Some((record.header.clone(), record.producer_handle));
+            return Some((record.header.clone(), record.producer_handle()));
         }
 
         None
@@ -116,7 +116,7 @@ impl Iterator for SmbiosRecordsIter<'_> {
 /// Generic operations like `add_record<T>()` are provided via an extension
 /// implementation on `Service<dyn Smbios>`.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait Smbios {
+pub trait Smbios: Send + Sync {
     /// Gets the SMBIOS version information.
     ///
     /// # Returns

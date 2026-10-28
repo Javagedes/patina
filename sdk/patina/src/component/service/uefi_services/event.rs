@@ -136,7 +136,7 @@ impl From<EfiError> for EventError {
 /// [`Service<dyn EventServices>`](crate::component::service::Service) parameter to their entry
 /// point.
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait EventServices {
+pub trait EventServices: Send + Sync {
     /// Creates an event with a notification callback that runs when the event is signaled.
     ///
     /// The `callback` is invoked at `notify_tpl` each time the event is signaled. The callback is

@@ -77,7 +77,7 @@ impl From<EfiError> for TimingError {
 /// }
 /// ```
 #[cfg_attr(any(test, feature = "mockall"), automock)]
-pub trait TimingServices {
+pub trait TimingServices: Send + Sync {
     /// Stalls execution for at least `duration`.
     ///
     /// `duration` can be expressed in any unit supported by [`core::time::Duration`].
