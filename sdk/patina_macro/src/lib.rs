@@ -102,6 +102,9 @@ pub fn devpath(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 /// with the `service` attribute to specify that the service is actually a dyn \<Trait\> that the underlying type
 /// implements.
 ///
+/// Registering an owned value stores shared `Arc` references to the registered service traits. Registering a
+/// `&'static` value instead stores shared references to those static trait objects without leaking an allocation.
+///
 /// ## Macro Attribute
 ///
 /// - `service`: The service trait(s) that the type implements.

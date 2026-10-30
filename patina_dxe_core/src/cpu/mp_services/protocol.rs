@@ -20,9 +20,33 @@ use patina::{
     standard::efi::{self, protocols::mp_services},
 };
 
-use super::services::{DispatchCompletion, MpError, MpServicesInner};
+use super::services::{DispatchCompletion, MpError, MpServices, MpServicesInner};
 use crate::allocator::core_allocate_pool;
-use patina_internal_cpu::mp::{ApWorkItem, MpDispatcher, MpSupport};
+use patina_internal_cpu::mp::{ApWorkItem, MpDispatcher};
+
+/// Keeps the backing MP service alive while exposing its generic implementation.
+pub(super) trait MpServicesOwner: 'static {
+    type Dispatcher: MpDispatcher;
+
+    fn services(&self) -> &MpServicesInner<Self::Dispatcher>;
+}
+
+impl MpServicesOwner for Service<MpServices> {
+    type Dispatcher = patina_internal_cpu::mp::MpSupport;
+
+    fn services(&self) -> &MpServicesInner<Self::Dispatcher> {
+        self
+    }
+}
+
+#[cfg(test)]
+impl<M: MpDispatcher + 'static> MpServicesOwner for alloc::sync::Arc<MpServicesInner<M>> {
+    type Dispatcher = M;
+
+    fn services(&self) -> &MpServicesInner<M> {
+        self
+    }
+}
 
 /// Bit set in the `ProcessorNumber` parameter of `GetProcessorInfo` to request extended topology information.
 ///
@@ -55,9 +79,9 @@ type RawStartupThisAp = unsafe extern "efiapi" fn(
 /// field so a protocol `this` pointer can be cast back to recover `self_ref`,
 /// letting the `extern "efiapi"` functions reach [`MpServicesInner`] without a global.
 #[repr(C)]
-pub(super) struct MpProtocolWrapper<M: MpDispatcher + 'static = MpSupport> {
+pub(super) struct MpProtocolWrapper<O: MpServicesOwner = Service<MpServices>> {
     protocol: mp_services::Protocol,
-    service: &'static MpServicesInner<M>,
+    service: O,
     /// Event services used by the ABI layer to signal the wait event of a non-blocking dispatch.
     events: Service<dyn EventServices>,
 }
@@ -68,14 +92,14 @@ const _: () = assert!(core::mem::offset_of!(MpProtocolWrapper, protocol) == 0);
 // SAFETY: `protocol` is the first field of this `#[repr(C)]` wrapper, so a consumer
 // reading the interface as EFI_MP_SERVICES_PROTOCOL sees the correct function table;
 // the trailing fields are invisible across the ABI.
-unsafe impl<M: MpDispatcher + 'static> ProtocolInterface for MpProtocolWrapper<M> {
+unsafe impl<O: MpServicesOwner> ProtocolInterface for MpProtocolWrapper<O> {
     const PROTOCOL_GUID: patina::BinaryGuid = patina::BinaryGuid(mp_services::PROTOCOL_GUID);
 }
 
 // Rust implementation of the protocol wrapper.
-impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
+impl<O: MpServicesOwner> MpProtocolWrapper<O> {
     /// Builds a wrapper around `services` populated with the protocol's function table.
-    pub(super) fn new(services: &'static MpServicesInner<M>, events: Service<dyn EventServices>) -> Self {
+    pub(super) fn new(services: O, events: Service<dyn EventServices>) -> Self {
         // SAFETY: The raw shims have the firmware ABI and machine-level parameter
         // layout of the protocol callbacks.
         let startup_all_aps =
@@ -105,9 +129,9 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
     ///
     /// `this` must be null or point to the `protocol` field of a live
     /// [`MpProtocolWrapper`] installed by this component.
-    unsafe fn wrapper<'a>(this: *mut mp_services::Protocol) -> Option<&'a MpProtocolWrapper<M>> {
+    unsafe fn wrapper<'a>(this: *mut mp_services::Protocol) -> Option<&'a MpProtocolWrapper<O>> {
         // SAFETY: Per the contract, `this` is null or the base of a live wrapper.
-        unsafe { (this as *const MpProtocolWrapper<M>).as_ref() }
+        unsafe { (this as *const MpProtocolWrapper<O>).as_ref() }
     }
 
     /// Recovers the backing [`MpServicesInner`] from a protocol `this` pointer.
@@ -115,9 +139,9 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
     /// # Safety
     ///
     /// Same contract as [`Self::wrapper`].
-    unsafe fn services<'a>(this: *mut mp_services::Protocol) -> Option<&'a MpServicesInner<M>> {
+    unsafe fn services<'a>(this: *mut mp_services::Protocol) -> Option<&'a MpServicesInner<O::Dispatcher>> {
         // SAFETY: forwarded contract.
-        unsafe { Self::wrapper(this) }.map(|w| w.service)
+        unsafe { Self::wrapper(this) }.map(|w| w.service.services())
     }
 
     /// Allocates and writes the `FailedCpuList`. See [`build_failed_cpu_list`] for details.
@@ -132,7 +156,7 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
         finished: *mut efi::Boolean,
         failed_cpu_list: *mut *mut usize,
     ) -> DispatchCompletion {
-        let events = self.events;
+        let events = self.events.clone();
         Box::new(move |failed: &[usize]| {
             if !finished.is_null() {
                 // SAFETY: the caller guaranteed a valid, writable `Finished` out-pointer.
@@ -152,7 +176,7 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
 }
 
 // Protocol function efiapi implementations.
-impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
+impl<O: MpServicesOwner> MpProtocolWrapper<O> {
     unsafe extern "efiapi" fn get_number_of_processors(
         this: *mut mp_services::Protocol,
         number_of_processors: *mut usize,
@@ -251,7 +275,12 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
         let completion =
             wait_event.map(|event| wrapper.create_completion_callback(event, core::ptr::null_mut(), failed_cpu_list));
 
-        match wrapper.service.startup_all_aps(work, single_thread.into(), timeout_in_microseconds, completion) {
+        match wrapper.service.services().startup_all_aps(
+            work,
+            single_thread.into(),
+            timeout_in_microseconds,
+            completion,
+        ) {
             Ok(()) => efi::Status::SUCCESS,
             // Only blocking mode reports failures here; marshal the list for the caller.
             Err(MpError::Timeout(failed)) => {
@@ -295,7 +324,7 @@ impl<M: MpDispatcher + 'static> MpProtocolWrapper<M> {
         let completion =
             wait_event.map(|event| wrapper.create_completion_callback(event, finished, core::ptr::null_mut()));
 
-        match wrapper.service.startup_this_ap(work, processor_index, timeout_in_microseconds, completion) {
+        match wrapper.service.services().startup_this_ap(work, processor_index, timeout_in_microseconds, completion) {
             Ok(()) => efi::Status::SUCCESS,
             Err(e) => e.into(),
         }
@@ -386,7 +415,7 @@ mod tests {
     use patina::component::service::uefi_services::event::MockEventServices;
     use patina_internal_cpu::mp::MockMpDispatcher;
 
-    type TestProtocolWrapper = MpProtocolWrapper<MockMpDispatcher>;
+    type TestProtocolWrapper = MpProtocolWrapper<alloc::sync::Arc<MpServicesInner<MockMpDispatcher>>>;
 
     struct TestTimer;
 
@@ -400,11 +429,20 @@ mod tests {
         }
     }
 
-    static TIMER: TestTimer = TestTimer;
-
     fn test_wrapper(mp: MockMpDispatcher) -> TestProtocolWrapper {
-        let service = Box::leak(Box::new(MpServicesInner::new(mp, Vec::new(), &TIMER)));
+        let service = alloc::sync::Arc::new(MpServicesInner::new(mp, Vec::new(), Service::mock(Box::new(TestTimer))));
         TestProtocolWrapper::new(service, Service::mock(Box::new(MockEventServices::new())))
+    }
+
+    #[test]
+    fn test_mp_protocol_retains_and_releases_service_owner() {
+        let wrapper = test_wrapper(MockMpDispatcher::new());
+        let owner = alloc::sync::Arc::downgrade(&wrapper.service);
+        assert!(owner.upgrade().is_some());
+
+        drop(wrapper);
+
+        assert!(owner.upgrade().is_none());
     }
 
     #[test]

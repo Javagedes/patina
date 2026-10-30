@@ -47,8 +47,10 @@ mod services;
 
 use hob::{MpHandOff, MpHandOffConfig, MpInformation2};
 use patina_internal_cpu::mp::{ApContext, MpDispatcher, MpSupport};
-use protocol::MpProtocolWrapper;
-use services::{MpServices, MpServicesInner};
+use protocol::{MpProtocolWrapper, MpServicesOwner};
+use services::MpServices;
+#[cfg(test)]
+use services::MpServicesInner;
 
 use crate::cpu::mp_services::hob::MpHobs;
 
@@ -95,15 +97,15 @@ impl MpServicesComponent {
         let contexts = self.allocate_ap_contexts(&mm, ap_count)?;
 
         // Initialize the MP architecture support.
-        let mut mp = MpSupport::initialize(*mm, *timer)
+        let mut mp = MpSupport::initialize(&*mm, timer.clone())
             .inspect_err(|e| log::error!("Failed to initialize MP architecture support: {e:?}"))?;
         mp.setup_aps(contexts, handoff)
             .inspect_err(|e| log::error!("Failed to set up application processors: {e:?}"))?;
 
         // Build the rust service.
-        let services: &'static MpServices = Box::leak(Box::new(MpServices::new(mp, parsed_hobs.processors, *timer)));
+        storage.add_service(MpServices::new(mp, parsed_hobs.processors, timer));
+        let services = storage.get_service::<MpServices>().ok_or(EfiError::NotFound)?;
         self.register_events(&events, &timer_events, services)?;
-        storage.add_service(services);
 
         Ok(())
     }
@@ -149,41 +151,44 @@ impl MpServicesComponent {
         Ok(contexts)
     }
 
-    fn register_events<M: MpDispatcher>(
+    fn register_events<O: MpServicesOwner + Clone>(
         &self,
         events: &Service<dyn EventServices>,
         timer_events: &Service<dyn TimerEventServices>,
-        services: &'static MpServicesInner<M>,
+        services: O,
     ) -> Result<(), EfiError> {
         // Create park event for EBS so that APs are parked before the OS takes over.
+        let park_services = services.clone();
         if let Err(e) =
             events.on_event_group(BinaryGuid(efi::EVENT_GROUP_EXIT_BOOT_SERVICES), Tpl::Callback, move || {
-                services.park();
+                park_services.services().park();
                 log::info!("MP Services: APs parked for ExitBootServices");
             })
         {
             log::error!("Failed to register MP AP-park event: {e:?}");
-            services.park();
+            services.services().park();
             return Err(e.into());
         }
 
+        let ready_services = services.clone();
         events
             .on_event_group(BinaryGuid(efi::EVENT_GROUP_READY_TO_BOOT), Tpl::Callback, move || {
-                services.mark_ready_to_boot();
+                ready_services.services().mark_ready_to_boot();
             })
             .inspect_err(|e| log::error!("Failed to register MP ReadyToBoot event: {e:?}"))?;
 
         // Create cache-attribute-change event AP synchronization.
+        let sync_services = services.clone();
         events
             .on_event_group(CACHE_ATTRIBUTE_CHANGE_GUID, Tpl::Callback, move || {
-                services.synchronize();
+                sync_services.services().synchronize();
             })
             .inspect_err(|e| log::error!("Failed to register MP MTRR sync event: {e:?}"))?;
 
         // Create a periodic timer to poll for non-blocking dispatches.
         let timer_event = timer_events
             .on_timer_event(Tpl::Notify, move || {
-                services.poll_notifications();
+                services.services().poll_notifications();
             })
             .inspect_err(|e| log::error!("Failed to create MP notification timer event: {e:?}"))?;
 
@@ -211,7 +216,7 @@ impl MpBistReporter {
             return;
         }
 
-        let deferred_protocols = *protocols;
+        let deferred_protocols = protocols.clone();
         let mut reported = false;
         if let Err(e) = protocols.on_protocol_installed::<StatusCodeProtocol>(Tpl::Callback, move |handle| {
             if reported {
@@ -254,12 +259,11 @@ impl MpServicesProtocolInstaller {
         protocols: Service<dyn ProtocolServices>,
         events: Service<dyn EventServices>,
     ) -> Result<(), EfiError> {
-        let services = *services;
         Self::install_protocol(services, protocols, events)
     }
 
-    fn install_protocol<M: MpDispatcher + 'static>(
-        services: &'static MpServicesInner<M>,
+    fn install_protocol<O: MpServicesOwner>(
+        services: O,
         protocols: Service<dyn ProtocolServices>,
         events: Service<dyn EventServices>,
     ) -> Result<(), EfiError> {
@@ -292,7 +296,7 @@ mod tests {
         },
         protocol::ProtocolInterface,
     };
-    use patina_internal_cpu::mp::{MockMpDispatcher, Processor};
+    use patina_internal_cpu::mp::MockMpDispatcher;
 
     struct TestTimer;
 
@@ -305,8 +309,6 @@ mod tests {
             1_000_000
         }
     }
-
-    static TIMER: TestTimer = TestTimer;
 
     fn page_allocation(page_count: usize) -> PageAllocation {
         let layout = Layout::from_size_align(uefi_pages_to_size!(page_count), patina::UEFI_PAGE_SIZE)
@@ -325,8 +327,8 @@ mod tests {
         Service::mock(Box::new(memory))
     }
 
-    fn test_services(mp: MockMpDispatcher) -> &'static MpServicesInner<MockMpDispatcher> {
-        Box::leak(Box::new(MpServicesInner::new(mp, Vec::new(), &TIMER)))
+    fn test_services(mp: MockMpDispatcher) -> alloc::sync::Arc<MpServicesInner<MockMpDispatcher>> {
+        alloc::sync::Arc::new(MpServicesInner::new(mp, Vec::new(), Service::mock(Box::new(TestTimer))))
     }
 
     fn test_event() -> Event {
@@ -637,7 +639,6 @@ mod tests {
     #[test]
     fn test_mp_services_component_parks_aps_when_exit_event_registration_fails() {
         let mut mp = MockMpDispatcher::new();
-        mp.expect_who_am_i().once().return_const(Some(Processor::Bsp));
         mp.expect_park().once().return_const(());
         let services = test_services(mp);
         let mut events = MockEventServices::new();
@@ -654,7 +655,6 @@ mod tests {
     #[test]
     fn test_mp_services_component_callbacks_forward_to_service() {
         let mut mp = MockMpDispatcher::new();
-        mp.expect_who_am_i().once().return_const(Some(Processor::Bsp));
         mp.expect_park().once().return_const(());
         mp.expect_sync_aps().once().return_const(true);
         let services = test_services(mp);
