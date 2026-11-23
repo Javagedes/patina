@@ -1,0 +1,31 @@
+[package]
+name = "patina_secure_boot"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "UEFI Secure Boot image verification for Patina."
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+goblin = { workspace = true, features = ["pe32", "pe64", "alloc"] }
+log = { workspace = true }
+patina = { workspace = true, features = ["alloc"] }
+zerocopy = { workspace = true }
+zerocopy-derive = { workspace = true }
+
+[dev-dependencies]
+patina = { workspace = true, features = ["alloc", "mockall"] }
+
+[features]
+std = []
+ci_features = []
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
