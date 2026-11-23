@@ -51,7 +51,6 @@ use crate::{
     events::EVENT_DB,
     performance::{self, CorePerformance},
     pi_dispatcher::fv::device_path_bytes_for_fv_file,
-    protocol_db::DXE_CORE_HANDLE,
     protocols::PROTOCOL_DB,
     systemtables::EfiSystemTable,
     tpl_mutex::TplMutex,
@@ -366,7 +365,7 @@ impl<P: PlatformInfo> PiDispatcher<P> {
                 // expected to be valid as long as the underlying FV and file data is valid; the
                 // validity obligation belongs to the dereferencing operation, not construction.
                 let file_path = core::ptr::NonNull::new(driver.device_path);
-                let status = self.load_image(false, DXE_CORE_HANDLE, file_path, Some(data));
+                let status = self.load_image_from_firmware_volume(file_path, data);
                 match status {
                     Ok(handle) => {
                         driver.image_handle = Some(handle);
@@ -1029,7 +1028,7 @@ mod tests {
     use uuid::uuid;
 
     use super::*;
-    use crate::{MockCore, MockPlatformInfo, test_collateral, test_support};
+    use crate::{MockCore, MockPlatformInfo, protocol_db::DXE_CORE_HANDLE, test_collateral, test_support};
 
     // Simple logger for log crate to dump stuff in tests
     struct SimpleLogger;

@@ -1078,6 +1078,26 @@ impl<P: super::PlatformInfo> super::PiDispatcher<P> {
         file_path: Option<NonNull<Protocol>>,
         image: Option<&[u8]>,
     ) -> Result<efi::Handle, ImageStatus> {
+        self.load_image_inner(boot_policy, parent_image_handle, file_path, image, false)
+    }
+
+    // Only the PI dispatcher may identify a source buffer as originating in its firmware-volume database.
+    pub(super) fn load_image_from_firmware_volume(
+        &self,
+        file_path: Option<NonNull<Protocol>>,
+        image: &[u8],
+    ) -> Result<efi::Handle, ImageStatus> {
+        self.load_image_inner(false, protocol_db::DXE_CORE_HANDLE, file_path, Some(image), true)
+    }
+
+    fn load_image_inner(
+        &self,
+        boot_policy: bool,
+        parent_image_handle: efi::Handle,
+        file_path: Option<NonNull<Protocol>>,
+        image: Option<&[u8]>,
+        trusted_fv_buffer: bool,
+    ) -> Result<efi::Handle, ImageStatus> {
         self.performance.map_or_default(|perf| perf.perf_load_image_begin(core::ptr::null_mut()));
 
         if image.is_none() && file_path.is_none() {
@@ -1098,7 +1118,8 @@ impl<P: super::PlatformInfo> super::PiDispatcher<P> {
         };
 
         // authenticate the image
-        let security_status = authenticate_image(file_path, &image_to_load, boot_policy, from_fv, auth_status);
+        let security_status =
+            authenticate_image(file_path, &image_to_load, boot_policy, from_fv || trusted_fv_buffer, auth_status);
 
         // If a security violation occurs, we still load the image, but will ultimately return a ImageStatus::SecurityViolation
         if let Err(err) = security_status
@@ -1744,6 +1765,12 @@ fn authenticate_image(
 ) -> Result<(), EfiError> {
     let device_path_raw = device_path.map_or(core::ptr::null_mut(), core::ptr::NonNull::as_ptr);
 
+    crate::uefi_services::security::authenticate(&patina::component::service::security::ImageAuthentication {
+        image,
+        from_firmware_volume: from_fv,
+        boot_policy,
+    })?;
+
     // SAFETY: Checks locate_protocol return value to determine if pointer is valid. as_ref() is used for shared access
     // which will also check if the pointer is null before allowing access.
     let security2_protocol = unsafe {
@@ -2058,6 +2085,36 @@ mod tests {
             assert_ne!(image_data.entry_point as usize, 0);
             assert!(!image_data.relocation_data.is_empty());
             assert!(image_data.hii_resource_section.is_some());
+        });
+    }
+
+    #[test]
+    fn test_load_image_preserves_trusted_fv_origin_only_for_dispatcher() {
+        use alloc::sync::Arc;
+        use patina::component::service::security::{ImageAuthentication, ImageSecurityHandler, SecurityServices};
+
+        struct FirmwareVolumeOnly;
+        impl ImageSecurityHandler for FirmwareVolumeOnly {
+            fn authenticate(&self, request: &ImageAuthentication<'_>) -> Result<(), EfiError> {
+                if request.from_firmware_volume { Ok(()) } else { Err(EfiError::AccessDenied) }
+            }
+        }
+
+        with_locked_state(|| {
+            let _cleanup = test_support::StateGuard::new(crate::uefi_services::security::clear_handlers);
+            let image = std::fs::read(test_paths::RUST_IMAGE_HII_RESOURCE).unwrap();
+            static PI_DISPATCHER: PiDispatcher<MockPlatformInfo> =
+                PiDispatcher::<MockPlatformInfo>::new(patina_ffs_extractors::NullSectionExtractor);
+            PI_DISPATCHER.init(
+                &create_dxe_core_hob(),
+                SYSTEM_TABLE.checked_lock().expect("test system table lock should be available").as_mut().unwrap(),
+            );
+            crate::uefi_services::CoreSecurityServices.register_handler(Arc::new(FirmwareVolumeOnly)).unwrap();
+            assert!(matches!(
+                PI_DISPATCHER.load_image(false, DXE_CORE_HANDLE, None, Some(&image)),
+                Err(ImageStatus::AccessDenied)
+            ));
+            assert!(PI_DISPATCHER.load_image_from_firmware_volume(None, &image).is_ok());
         });
     }
 
