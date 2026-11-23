@@ -1,0 +1,33 @@
+[package]
+name = "patina_crypto"
+version.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Cryptographic services for Patina UEFI components."
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+log = { workspace = true }
+mockall = { workspace = true, optional = true }
+patina = { workspace = true, features = ["alloc"] }
+patina_test = { workspace = true }
+zerocopy = { workspace = true }
+
+[dev-dependencies]
+mockall = { workspace = true }
+patina = { workspace = true, features = ["alloc", "mockall"] }
+
+[features]
+mockall = ["dep:mockall", "patina/mockall", "std"]
+std = []
+# All non-std features to test in CI
+ci_features = []
+
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

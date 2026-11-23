@@ -32,6 +32,7 @@ log = { version = "0.4", default-features = false }
 memoffset = {version = "0.9.1" }
 num-traits = { version = "0.2", default-features = false }
 patina = { version = "24.5.0", path = "sdk/patina" }
+patina_crypto = { version = "24.5.0", path = "components/patina_crypto" }
 patina_debugger = { version = "24.5.0", path = "core/patina_debugger" }
 patina_ffs = { version = "24.5.0", path = "sdk/patina_ffs" }
 patina_ffs_extractors = { version = "24.5.0", path = "sdk/patina_ffs_extractors" }

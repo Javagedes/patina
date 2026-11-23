@@ -46,6 +46,7 @@ words:
   - bitvec
   - blkio
   - bootx
+  - brainpoolp
   - bsdata
   - bucketize
   - bumpalo
@@ -74,6 +75,7 @@ words:
   - depex
   - deque
   - descs
+  - diffie
   - distros
   - dllcharacteristics
   - dnested
@@ -213,6 +215,8 @@ words:
   - riscv
   - rlibs
   - rposition
+  - rsaes
+  - rsassa
   - ruint
   - rustification
   - rustonomicon
