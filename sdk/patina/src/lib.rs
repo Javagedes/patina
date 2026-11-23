@@ -32,6 +32,8 @@ pub use base::string::{Char8String, Char16String};
 pub mod arch;
 #[cfg(feature = "alloc")]
 pub mod component;
+#[cfg(feature = "alloc")]
+pub mod crypto;
 pub mod debug;
 pub mod management_mode;
 #[cfg(feature = "alloc")]
